@@ -99,12 +99,7 @@ on showSpotifySettings()
 			with title "Spotify Credentials — Step 2/2"
 		set newClientSecret to text returned of secretDialog
 
-		-- Save credentials via spotdl
-		do shell script "mkdir -p " & quoted form of (homeDir & ".spotdl")
-		do shell script spotdlPath & " --client-id " & quoted form of newClientId & " --client-secret " & quoted form of newClientSecret & " save 2>&1 || true"
-
-		-- Clear cached auth token so it re-authenticates with new credentials
-		do shell script "rm -f " & quoted form of (homeDir & ".spotdl/.spotipy") & " 2>/dev/null; true"
+		my saveCredentials(homeDir, configPath, newClientId, newClientSecret)
 
 		display alert "Credentials Saved" ¬
 			message "Your Spotify credentials have been updated and the auth cache has been cleared." & return & return & ¬
@@ -114,14 +109,27 @@ on showSpotifySettings()
 end showSpotifySettings
 
 
+-- Save client_id + client_secret directly into spotdl's config.json
+-- and wipe all spotipy token caches so stale refresh tokens can't cause 86400s bans.
+on saveCredentials(homeDir, configPath, clientId, clientSecret)
+	do shell script "mkdir -p " & quoted form of (homeDir & ".spotdl")
+	-- Update config.json in-place with Python (reliable, no async issues unlike spotdl save)
+	set pyCode to "import json; d=json.load(open('" & configPath & "')); d['client_id']='" & clientId & "'; d['client_secret']='" & clientSecret & "'; open('" & configPath & "','w').write(json.dumps(d,indent=2))"
+	do shell script "python3 -c " & quoted form of pyCode
+	-- Wipe ALL known spotipy token cache locations so the next run does a fresh OAuth flow
+	do shell script "rm -f " & quoted form of (homeDir & ".spotdl/.spotipy") & "; rm -f " & quoted form of (homeDir & ".cache") & "; rm -f /tmp/.spotipy 2>/dev/null; true"
+end saveCredentials
+
+
 on handleSpotify(playlistURL)
 	set homeDir to POSIX path of (path to home folder)
 	set configPath to homeDir & ".spotdl/config.json"
 
-	-- Check if both Spotify credentials are configured
+	-- Check if both Spotify credentials are configured (and not the default spotdl shared ones)
 	set hasCredentials to false
+	set defaultId to "5f573c9620494bae87890c0f08a60293"
 	try
-		set checkCmd to "python3 -c \"import json,sys; d=json.load(open('" & configPath & "')); cid=d.get('client_id',''); cs=d.get('client_secret',''); sys.exit(0 if cid and len(cid)>5 and cs and len(cs)>5 else 1)\" 2>/dev/null && echo YES || echo NO"
+		set checkCmd to "python3 -c \"import json,sys; d=json.load(open('" & configPath & "')); cid=d.get('client_id',''); cs=d.get('client_secret',''); sys.exit(0 if cid and len(cid)>5 and cs and len(cs)>5 and cid!='" & defaultId & "' else 1)\" 2>/dev/null && echo YES || echo NO"
 		set credCheck to do shell script checkCmd
 		if credCheck is "YES" then
 			set hasCredentials to true
@@ -129,7 +137,7 @@ on handleSpotify(playlistURL)
 	end try
 
 	if not hasCredentials then
-		-- First-time Spotify setup
+		-- First-time Spotify setup (or default credentials detected)
 		display alert "Spotify Setup Required" ¬
 			message "To download from Spotify, you need a free Spotify Developer account." & return & return & ¬
 			"Click 'Open Dashboard' to create an app and get your API credentials." ¬
@@ -166,9 +174,7 @@ on handleSpotify(playlistURL)
 			with title "Spotify Setup — Step 2/2"
 		set clientSecret to text returned of secretDialog
 
-		-- Save credentials via spotdl
-		do shell script "mkdir -p " & quoted form of (homeDir & ".spotdl")
-		do shell script spotdlPath & " --client-id " & quoted form of clientId & " --client-secret " & quoted form of clientSecret & " save 2>&1 || true"
+		my saveCredentials(homeDir, configPath, clientId, clientSecret)
 	end if
 
 	-- Build output path: ~/Music/music-downloader/<playlist-name>/<pos> - <artists> - <title>.mp3
