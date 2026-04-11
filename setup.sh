@@ -132,6 +132,48 @@ if [ -z "$YTDLP_PATH" ]; then
 fi
 success "yt-dlp: $YTDLP_PATH"
 
+# ── 7b. Patch spotdl: downgrade YouTube Music block from crash to warning ─────
+# spotdl raises DownloaderError if YTM is temporarily IP-blocked, even when
+# fallback providers are configured. This patch makes it log a warning and
+# drop youtube-music from the provider list for that run instead of aborting.
+info "Patching spotdl YTM block to graceful fallback..."
+ENTRY_POINT="$(find "$PIPX_VENVS/spotdl/lib" -name "entry_point.py" -path "*/spotdl/console/*" 2>/dev/null | head -1)"
+if [ -n "$ENTRY_POINT" ]; then
+    python3 - "$ENTRY_POINT" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    src = f.read()
+
+old = '            raise DownloaderError(\n                "You are blocked by YouTube Music. "\n                "Please use a VPN, change youtube-music to piped, or use other audio providers"\n            )'
+
+new = ('            logger.warning(\n'
+       '                "YouTube Music is currently unavailable (IP block or regional restriction). "\n'
+       '                "Falling back to remaining audio providers: %s",\n'
+       '                [p for p in downloader_settings["audio_providers"] if p != "youtube-music"],\n'
+       '            )\n'
+       '            downloader_settings["audio_providers"] = [\n'
+       '                p for p in downloader_settings["audio_providers"] if p != "youtube-music"\n'
+       '            ]\n'
+       '            if not downloader_settings["audio_providers"]:\n'
+       '                raise DownloaderError(\n'
+       '                    "YouTube Music is blocked and no fallback audio providers are configured. "\n'
+       '                    "Add \'youtube\' or \'piped\' to audio_providers in your spotdl config."\n'
+       '                )')
+
+if old in src:
+    with open(path, 'w') as f:
+        f.write(src.replace(old, new))
+    print("Patch applied.")
+else:
+    print("Already patched or source changed — skipping.")
+PYEOF
+    success "spotdl YTM patch done"
+else
+    warn "spotdl entry_point.py not found — skipping YTM patch"
+fi
+
 # ── 8. Compile AppleScript ────────────────────────────────────────────────────
 info "Compiling Music Downloader.app..."
 
