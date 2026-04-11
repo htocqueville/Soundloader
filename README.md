@@ -1,10 +1,6 @@
 # Music Downloader for Mac
 
-A simple macOS app to download music from **Spotify** and **YouTube** playlists to your Music folder. No terminal knowledge required after setup.
-
-- Downloads to `~/Music/music-downloader/<playlist name>/` automatically
-- MP3, 320 kbps
-- Spotify and YouTube are fully independent — use one, the other, or both
+Download music from **Spotify**, **YouTube**, and **SoundCloud** playlists to your Mac. No terminal knowledge required after setup.
 
 ## Requirements
 
@@ -13,16 +9,15 @@ A simple macOS app to download music from **Spotify** and **YouTube** playlists 
 
 ## Installation
 
-> **Never used a terminal before?** No problem — follow the steps below exactly as written.
+> **First time with Terminal?** Follow these steps exactly — it's just copy-paste.
 
 ### Step 1 — Open Terminal
 
-Press **⌘ + Space**, type `Terminal`, press **Enter**.  
-A black or white window with a text prompt will open. That's your Terminal.
+Press **⌘ + Space**, type `Terminal`, press **Enter**.
 
-### Step 2 — Copy and run the install commands
+### Step 2 — Run the installer
 
-Select all three lines, copy them (**⌘ + C**), paste into Terminal (**⌘ + V**), then press **Enter**.
+Copy and paste these three lines into Terminal, then press **Enter**:
 
 ```bash
 git clone https://github.com/htocqueville/music-downloader-mac.git
@@ -30,88 +25,76 @@ cd music-downloader-mac
 bash setup.sh
 ```
 
-The setup takes a few minutes (it installs the necessary tools). You'll see progress messages. At the end you should see **"Setup complete!"**.
+Wait a few minutes until you see **"Setup complete!"**. Then open **Music Downloader** from your Applications or Spotlight.
 
-### What gets installed
-
-- [Homebrew](https://brew.sh) — macOS package manager (if not already installed)
-- ffmpeg — audio conversion
-- [spotdl](https://github.com/nyekuuu/spotify-downloader) (nyekuuu fork, with `--user-auth` OAuth support for the new Spotify API)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — YouTube downloader
-- **Music Downloader.app** → compiled and placed in `/Applications`
-
-> **Re-running `setup.sh` is safe** — it upgrades all tools and rebuilds the app. Use it to update.
+---
 
 ## Spotify Setup (one-time, ~5 min)
 
-Spotify requires a free developer API key to access its catalog.
+Spotify requires a free developer key. You only do this once.
 
-**Quick steps:**
 1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and log in
 2. Create an app — add both Redirect URIs: `http://127.0.0.1:9900/` and `http://127.0.0.1:9900`
-3. Copy your **Client ID** and **Client Secret** from Settings
+3. Copy your **Client ID** and **Client Secret** from the app's Settings page
 
-On your first Spotify download, the app will ask for these credentials and guide you through the one-time browser authorization.
+When you open Music Downloader for the first time and enter a Spotify URL, it will ask for these two values and guide you through a one-time browser login.
 
-→ See [docs/spotify-setup.md](docs/spotify-setup.md) for a detailed step-by-step guide with screenshots.
+→ Detailed guide with screenshots: [docs/spotify-setup.md](docs/spotify-setup.md)
 
-## YouTube Setup
+## YouTube Setup (one-time)
 
-YouTube downloads use your Safari session to authenticate (avoids bot detection).
+YouTube uses your Safari session to avoid bot detection. Grant Terminal access to Safari cookies:
 
-**One-time step:** Grant Terminal access to Safari cookies.
 1. Open **System Settings → Privacy & Security → Full Disk Access**
 2. Click **+** and add **Terminal** (found in `/Applications/Utilities/`)
-3. Restart Terminal
+3. Restart Terminal, then re-run `bash setup.sh`
 
-You need to be **logged into YouTube in Safari** for downloads to work. No other setup required.
+You must be **logged into YouTube in Safari** for downloads to work.
+
+## SoundCloud
+
+No setup needed — SoundCloud downloads work immediately.
+
+---
 
 ## Usage
 
-1. Open **Music Downloader** from `/Applications` or Spotlight
-2. Paste a Spotify or YouTube playlist URL
+1. Open **Music Downloader** from Applications or Spotlight
+2. Paste a Spotify, YouTube, or SoundCloud playlist URL
 3. Click **Download**
-4. A Terminal window opens showing live progress
-5. Files land in `~/Music/<playlist name>/`
+4. A Terminal window shows live progress
+5. Files are saved to `~/Music/music-downloader/<playlist name>/`
+
+Already-downloaded tracks are skipped automatically.
 
 **Supported URLs:**
 - `https://open.spotify.com/playlist/...`
-- `https://www.youtube.com/playlist?list=...`
-- `https://youtu.be/...` (single YouTube video → saved to `~/Music/YouTube/`)
+- `https://www.youtube.com/playlist?list=...` or `https://youtu.be/...`
+- `https://soundcloud.com/.../sets/...`
 
-## File naming
-
-| Source | Path |
-|--------|------|
-| Spotify | `~/Music/music-downloader/<playlist name>/<track number> - <artists> - <title>.mp3` |
-| YouTube playlist | `~/Music/music-downloader/<playlist name>/<video title>.mp3` |
-| YouTube single | `~/Music/music-downloader/YouTube/<uploader> - <title>.mp3` |
+---
 
 ## Updating
 
-Open Terminal (⌘ + Space → "Terminal"), then run:
+The app checks for updates automatically at launch and will notify you when one is available.
 
-```bash
-cd music-downloader-mac
-git pull
-bash setup.sh
-```
+---
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| App doesn't open / "damaged" error | Re-run `bash setup.sh` from the project folder |
-| `spotdl: command not found` in Terminal | Re-run `setup.sh`, then restart your terminal |
-| Spotify: "INVALID_CLIENT" | Re-check Client ID and Secret in your Spotify app settings |
-| Spotify: "Invalid redirect URI" | Add both `http://127.0.0.1:9900/` and `http://127.0.0.1:9900` in your Spotify app Redirect URIs |
-| YouTube: "Operation not permitted" on cookies | Grant Terminal Full Disk Access (see YouTube Setup section) |
-| YouTube download stops mid-playlist | Re-run the download — yt-dlp skips already-downloaded files |
-| `ffmpeg not found` | Run: `brew install ffmpeg` |
+| App doesn't open / "damaged" error | Re-run `bash setup.sh` |
+| Spotify: "INVALID_CLIENT" | Check Client ID and Secret in your Spotify app settings |
+| Spotify: "Invalid redirect URI" | Add both `http://127.0.0.1:9900/` and `http://127.0.0.1:9900` as Redirect URIs |
+| YouTube: "Operation not permitted" on cookies | Grant Terminal Full Disk Access (see YouTube Setup above) |
+| Download stops mid-playlist | Re-run — already-downloaded tracks are skipped |
+
+---
 
 ## Credits
 
-- [nyekuuu/spotify-downloader](https://github.com/nyekuuu/spotify-downloader) — spotdl fork with `--user-auth` OAuth
+- [nyekuuu/spotify-downloader](https://github.com/nyekuuu/spotify-downloader) — spotdl with OAuth support
 - [yt-dlp/yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - [FFmpeg](https://ffmpeg.org)
 
