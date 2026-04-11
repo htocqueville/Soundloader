@@ -255,6 +255,7 @@ on handleSpotify(playlistURL)
 		spotdlPath & " --config --user-auth download " & quoted form of playlistURL & ¬
 		" --bitrate 320k --format mp3 --threads 4" & ¬
 		" --output " & quoted form of outputTemplate & ¬
+		"; osascript -e 'display notification \"Spotify download complete\" with title \"Music Downloader\" sound name \"Glass\"'" & ¬
 		"; echo ''; echo '✅ Download complete. You can close this window.'"
 
 	tell application "Terminal"
@@ -286,6 +287,7 @@ on handleSoundCloud(scURL)
 		" --retries 5" & ¬
 		" -o " & quoted form of outputTemplate & ¬
 		" " & quoted form of scURL & ¬
+		"; osascript -e 'display notification \"SoundCloud download complete\" with title \"Music Downloader\" sound name \"Glass\"'" & ¬
 		"; echo ''; echo '✅ Download complete. You can close this window.'"
 
 	tell application "Terminal"
@@ -328,6 +330,7 @@ on handleYouTube(videoURL)
 		" --cookies-from-browser safari" & ¬
 		" -o " & quoted form of outputTemplate & ¬
 		" " & quoted form of videoURL & ¬
+		"; osascript -e 'display notification \"YouTube download complete\" with title \"Music Downloader\" sound name \"Glass\"'" & ¬
 		"; echo ''; echo '✅ Download complete. You can close this window.'"
 
 	tell application "Terminal"
