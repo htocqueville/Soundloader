@@ -45,7 +45,7 @@ on run
 			buttons {"Cancel", "⚙ Settings", "Download"} ¬
 			default button "Download" ¬
 			cancel button "Cancel" ¬
-			with title "Music Downloader"
+			with title "Sounddrop"
 
 		set inputURL to text returned of dialogURL
 		set clickedBtn to button returned of dialogURL
@@ -96,7 +96,7 @@ on performUpdate()
 		"cd " & quoted form of repoPath & ¬
 		" && echo '⬇️  Pulling latest changes...' && git pull --ff-only" & ¬
 		" && echo '' && echo '🔧 Rebuilding app...' && bash " & quoted form of (repoPath & "/setup.sh") & ¬
-		" && echo '' && echo '✅ Update complete! Please reopen Music Downloader from /Applications or Spotlight.'" & ¬
+		" && echo '' && echo '✅ Update complete! Please reopen Sounddrop from /Applications or Spotlight.'" & ¬
 		" || echo '' && echo '❌ Update failed. Check the output above and try again.'"
 	tell application "Terminal"
 		activate
@@ -273,7 +273,7 @@ on handleSpotify(playlistURL)
 		spotdlPath & " --config --user-auth download " & quoted form of playlistURL & ¬
 		" --bitrate 320k --format mp3 --threads 4" & ¬
 		" --output " & quoted form of outputTemplate & ¬
-		"; osascript -e 'display notification \"Spotify download complete\" with title \"Music Downloader\" sound name \"Glass\"'" & ¬
+		"; osascript -e 'display notification \"Spotify download complete\" with title \"Sounddrop\" sound name \"Glass\"'" & ¬
 		"; echo ''; echo '✅ Download complete. You can close this window.'"
 
 	tell application "Terminal"
@@ -305,7 +305,7 @@ on handleSoundCloud(scURL)
 		" --retries 5" & ¬
 		" -o " & quoted form of outputTemplate & ¬
 		" " & quoted form of scURL & ¬
-		"; osascript -e 'display notification \"SoundCloud download complete\" with title \"Music Downloader\" sound name \"Glass\"'" & ¬
+		"; osascript -e 'display notification \"SoundCloud download complete\" with title \"Sounddrop\" sound name \"Glass\"'" & ¬
 		"; echo ''; echo '✅ Download complete. You can close this window.'"
 
 	tell application "Terminal"
@@ -348,7 +348,7 @@ on handleYouTube(videoURL)
 		" --cookies-from-browser safari" & ¬
 		" -o " & quoted form of outputTemplate & ¬
 		" " & quoted form of videoURL & ¬
-		"; osascript -e 'display notification \"YouTube download complete\" with title \"Music Downloader\" sound name \"Glass\"'" & ¬
+		"; osascript -e 'display notification \"YouTube download complete\" with title \"Sounddrop\" sound name \"Glass\"'" & ¬
 		"; echo ''; echo '✅ Download complete. You can close this window.'"
 
 	tell application "Terminal"

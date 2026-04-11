@@ -1,4 +1,4 @@
-# Music Downloader for Mac
+# Sounddrop
 
 Download music from **Spotify**, **YouTube**, and **SoundCloud** playlists to your Mac. No terminal knowledge required after setup.
 
@@ -20,12 +20,12 @@ Press **⌘ + Space**, type `Terminal`, press **Enter**.
 Copy and paste these three lines into Terminal, then press **Enter**:
 
 ```bash
-git clone https://github.com/htocqueville/music-downloader-mac.git
-cd music-downloader-mac
+git clone https://github.com/htocqueville/sounddrop-mac.git
+cd sounddrop-mac
 bash setup.sh
 ```
 
-Wait a few minutes until you see **"Setup complete!"**. Then open **Music Downloader** from your Applications or Spotlight.
+Wait a few minutes until you see **"Setup complete!"**. Then open **Sounddrop** from your Applications or Spotlight.
 
 ---
 
@@ -37,7 +37,7 @@ Spotify requires a free developer key. You only do this once.
 2. Create an app — add both Redirect URIs: `http://127.0.0.1:9900/` and `http://127.0.0.1:9900`
 3. Copy your **Client ID** and **Client Secret** from the app's Settings page
 
-When you open Music Downloader for the first time and enter a Spotify URL, it will ask for these two values and guide you through a one-time browser login.
+When you open Sounddrop for the first time and enter a Spotify URL, it will ask for these two values and guide you through a one-time browser login.
 
 → Detailed guide with screenshots: [docs/spotify-setup.md](docs/spotify-setup.md)
 
@@ -59,7 +59,7 @@ No setup needed — SoundCloud downloads work immediately.
 
 ## Usage
 
-1. Open **Music Downloader** from Applications or Spotlight
+1. Open **Sounddrop** from Applications or Spotlight
 2. Paste a Spotify, YouTube, or SoundCloud playlist URL
 3. Click **Download**
 4. A Terminal window shows live progress

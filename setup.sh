@@ -14,7 +14,7 @@ error()   { echo -e "${RED}✗ $1${RESET}"; exit 1; }
 
 echo -e "${BOLD}"
 echo "╔══════════════════════════════════╗"
-echo "║   Music Downloader — Setup       ║"
+echo "║   Sounddrop — Setup              ║"
 echo "╚══════════════════════════════════╝"
 echo -e "${RESET}"
 
@@ -175,12 +175,12 @@ else
 fi
 
 # ── 8. Compile AppleScript ────────────────────────────────────────────────────
-info "Compiling Music Downloader.app..."
+info "Compiling Sounddrop.app..."
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APPLESCRIPT_SOURCE="$SCRIPT_DIR/app/MusicDownloader.applescript"
-APP_DEST="/Applications/Music Downloader.app"
-TMP_SCRIPT="/tmp/MusicDownloader_build.applescript"
+APPLESCRIPT_SOURCE="$SCRIPT_DIR/app/Sounddrop.applescript"
+APP_DEST="/Applications/Sounddrop.app"
+TMP_SCRIPT="/tmp/Sounddrop_build.applescript"
 
 if [ ! -f "$APPLESCRIPT_SOURCE" ]; then
     error "AppleScript source not found at $APPLESCRIPT_SOURCE"
@@ -235,7 +235,7 @@ echo -e "${GREEN}${BOLD}╔═════════════════�
 echo "║   Setup complete!                                ║"
 echo "╚══════════════════════════════════════════════════╝${RESET}"
 echo ""
-echo "  Open 'Music Downloader' from /Applications or Spotlight."
+echo "  Open 'Sounddrop' from /Applications or Spotlight."
 echo ""
 echo "  YouTube  → works immediately, no setup needed."
 echo "  Spotify  → the app will guide you through credentials on first use."
