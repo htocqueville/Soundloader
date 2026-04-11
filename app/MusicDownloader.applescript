@@ -81,7 +81,6 @@ on showSpotifySettings()
 
 	if choiceBtn is "Open Dashboard" then
 		open location "https://developer.spotify.com/dashboard"
-		-- Continue to edit after opening dashboard
 		set choiceBtn to "Edit Credentials"
 	end if
 
@@ -116,10 +115,8 @@ end showSpotifySettings
 -- and wipe all spotipy token caches so stale refresh tokens can't cause 86400s bans.
 on saveCredentials(homeDir, configPath, clientId, clientSecret)
 	do shell script "mkdir -p " & quoted form of (homeDir & ".spotdl")
-	-- Update config.json in-place with Python (reliable, no async issues unlike spotdl save)
 	set pyCode to "import json; d=json.load(open('" & configPath & "')); d['client_id']='" & clientId & "'; d['client_secret']='" & clientSecret & "'; open('" & configPath & "','w').write(json.dumps(d,indent=2))"
 	do shell script "python3 -c " & quoted form of pyCode
-	-- Wipe ALL known spotipy token cache locations so the next run does a fresh OAuth flow
 	do shell script "rm -f " & quoted form of (homeDir & ".spotdl/.spotipy") & "; rm -f " & quoted form of (homeDir & ".cache") & "; rm -f /tmp/.spotipy 2>/dev/null; true"
 end saveCredentials
 
@@ -127,28 +124,22 @@ end saveCredentials
 on handleSpotify(playlistURL)
 	set homeDir to POSIX path of (path to home folder)
 	set configPath to homeDir & ".spotdl/config.json"
+	set musicDir to POSIX path of (path to music folder)
 
-	-- Check if both Spotify credentials are configured (and not the default spotdl shared ones)
+	-- Check credentials (not default shared spotdl ones)
 	set hasCredentials to false
 	set defaultId to "5f573c9620494bae87890c0f08a60293"
 	try
 		set checkCmd to "python3 -c \"import json,sys; d=json.load(open('" & configPath & "')); cid=d.get('client_id',''); cs=d.get('client_secret',''); sys.exit(0 if cid and len(cid)>5 and cs and len(cs)>5 and cid!='" & defaultId & "' else 1)\" 2>/dev/null && echo YES || echo NO"
-		set credCheck to do shell script checkCmd
-		if credCheck is "YES" then
-			set hasCredentials to true
-		end if
+		if (do shell script checkCmd) is "YES" then set hasCredentials to true
 	end try
 
 	if not hasCredentials then
-		-- First-time Spotify setup (or default credentials detected)
 		display alert "Spotify Setup Required" ¬
 			message "To download from Spotify, you need a free Spotify Developer account." & return & return & ¬
 			"Click 'Open Dashboard' to create an app and get your API credentials." ¬
-			buttons {"Open Dashboard"} ¬
-			default button "Open Dashboard"
-
+			buttons {"Open Dashboard"} default button "Open Dashboard"
 		open location "https://developer.spotify.com/dashboard"
-
 		display alert "Create a Spotify App" ¬
 			message "In the dashboard:" & return & ¬
 			"1. Click 'Create app'" & return & ¬
@@ -160,30 +151,20 @@ on handleSpotify(playlistURL)
 			"5. Go to Settings → copy Client ID and Client Secret" & return & return & ¬
 			"Then click OK and enter your credentials." ¬
 			buttons {"OK"} default button "OK"
-
 		set idDialog to display dialog "Enter your Spotify Client ID:" ¬
-			default answer "" ¬
-			buttons {"Cancel", "Next"} ¬
-			default button "Next" ¬
-			cancel button "Cancel" ¬
+			default answer "" buttons {"Cancel", "Next"} default button "Next" cancel button "Cancel" ¬
 			with title "Spotify Setup — Step 1/2"
 		set clientId to text returned of idDialog
-
 		set secretDialog to display dialog "Enter your Spotify Client Secret:" ¬
-			default answer "" ¬
-			buttons {"Cancel", "Save & Download"} ¬
-			default button "Save & Download" ¬
-			cancel button "Cancel" ¬
+			default answer "" buttons {"Cancel", "Save & Download"} default button "Save & Download" cancel button "Cancel" ¬
 			with title "Spotify Setup — Step 2/2"
-		set clientSecret to text returned of secretDialog
-
-		my saveCredentials(homeDir, configPath, clientId, clientSecret)
+		my saveCredentials(homeDir, configPath, text returned of idDialog, text returned of secretDialog)
 	end if
 
-	-- Build output path: ~/Music/music-downloader/<playlist-name>/<pos> - <artists> - <title>.mp3
-	set musicDir to POSIX path of (path to music folder)
+	-- --overwrite skip (set in ~/.spotdl/config.json) makes spotdl check whether the
+	-- output file already exists on disk before downloading each track.
+	-- Behaviour: file present → skip | file deleted → re-downloads | new track → downloads.
 	set outputTemplate to musicDir & "music-downloader/{list-name}/{list-position} - {artists} - {title}.{output-ext}"
-
 	set cmd to "source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; " & ¬
 		spotdlPath & " --config --user-auth download " & quoted form of playlistURL & ¬
 		" --bitrate 320k --format mp3 --threads 4" & ¬
@@ -199,29 +180,20 @@ end handleSpotify
 
 on handleSoundCloud(scURL)
 	set musicDir to POSIX path of (path to music folder)
-
-	-- Detect content type from URL structure
 	set isSet to (scURL contains "/sets/")
 
 	if isSet then
-		-- Playlist/set → dedicated folder, tracks numbered and tagged
-		-- %(playlist_title)s = set name, %(playlist_index)02d = zero-padded position
 		set outputTemplate to musicDir & "music-downloader/%(playlist_title)s/%(playlist_index)02d - %(uploader)s - %(title)s.%(ext)s"
 	else
-		-- Single track or user profile → flat SoundCloud folder
 		set outputTemplate to musicDir & "music-downloader/SoundCloud/%(uploader)s - %(title)s.%(ext)s"
 	end if
 
-	-- Notes on flags:
-	--   -i / --ignore-errors   : skip unavailable tracks, don't abort the whole playlist
-	--   --embed-thumbnail      : write cover art into the MP3
-	--   --add-metadata         : artist, title, date tags
-	--   --min/max-sleep        : avoid SoundCloud rate-limiting (~429 after ~10 tracks)
-	--   --retries 5            : retry transient network failures per track
-	--   --no-playlist          : not set → yt-dlp downloads the full set automatically
+	-- --no-overwrites makes yt-dlp check whether the output file already exists on disk.
+	-- Behaviour: file present → skip | file deleted → re-downloads | new track → downloads.
 	set cmd to "source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; " & ¬
 		ytdlpPath & ¬
 		" --ignore-errors" & ¬
+		" --no-overwrites" & ¬
 		" --extract-audio --audio-format mp3 --audio-quality 0" & ¬
 		" --add-metadata --embed-thumbnail" & ¬
 		" --min-sleep-interval 2 --max-sleep-interval 4" & ¬
@@ -239,22 +211,20 @@ end handleSoundCloud
 
 on handleYouTube(videoURL)
 	set musicDir to POSIX path of (path to music folder)
-
-	-- Detect playlist vs single video
 	set isPlaylist to (videoURL contains "list=")
 
 	if isPlaylist then
-		-- %(playlist_title)s resolved automatically by yt-dlp
 		set outputTemplate to musicDir & "music-downloader/%(playlist_title)s/%(title)s.%(ext)s"
 	else
-		-- Single video → ~/Music/music-downloader/YouTube/<uploader> - <title>.mp3
 		set outputTemplate to musicDir & "music-downloader/YouTube/%(uploader)s - %(title)s.%(ext)s"
 	end if
 
+	-- --no-overwrites makes yt-dlp check whether the output file already exists on disk.
+	-- Behaviour: file present → skip | file deleted → re-downloads | new track → downloads.
 	set cmd to "source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; " & ¬
 		ytdlpPath & " --extract-audio --audio-format mp3" & ¬
 		" --postprocessor-args \"ffmpeg:-b:a 320k\"" & ¬
-		" --yes-playlist --add-metadata" & ¬
+		" --yes-playlist --no-overwrites --add-metadata" & ¬
 		" --cookies-from-browser safari" & ¬
 		" -o " & quoted form of outputTemplate & ¬
 		" " & quoted form of videoURL & ¬
