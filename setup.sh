@@ -224,10 +224,20 @@ osacompile -o "$APP_DEST" "$TMP_SCRIPT"
 rm -f "$TMP_SCRIPT"
 
 # Apply custom icon (replaces the default Script Editor applet icon)
+# osacompile ships a compiled Assets.car that macOS prefers over applet.icns
+# at runtime — including for the icon shown in `display dialog` / `display alert`.
+# Removing it forces the loader to fall back to our applet.icns.
 ICON_SRC="$SCRIPT_DIR/assets/soundloader.icns"
 if [ -f "$ICON_SRC" ]; then
     cp "$ICON_SRC" "$APP_DEST/Contents/Resources/applet.icns"
+    rm -f "$APP_DEST/Contents/Resources/Assets.car"
+    rm -f "$APP_DEST/Contents/Resources/applet.rsrc"
     touch "$APP_DEST"
+    # Bust the icon services cache so the new icon shows up immediately
+    # (otherwise the Dock/Finder/dialog code keeps the old icon until logout)
+    rm -rf "$HOME/Library/Caches/com.apple.iconservices.store" 2>/dev/null || true
+    killall Dock 2>/dev/null || true
+    killall Finder 2>/dev/null || true
 fi
 
 # Remove quarantine flag (app was built locally, shouldn't be quarantined,
