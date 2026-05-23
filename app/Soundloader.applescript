@@ -279,18 +279,125 @@ on handleSpotify(playlistURL)
 	set AppleScript's text item delimiters to ""
 	set spotdlPython to spotdlBinDir & "/python3"
 	set syncScript to repoPath & "/scripts/spotify_sync.py"
+	set precheckScript to repoPath & "/scripts/spotify_precheck.py"
+	set cacheDir to homeDir & ".soundloader/cache"
 
-	set syncCmd to ""
+	-- ── Pre-check (playlists only) ───────────────────────────────────────────
+	-- Runs in < 2 s: detects rate limiting and looks for a fresh local cache.
+	-- Lets the user choose between fetching fresh data or reusing the cache.
+	set useCache to false
+	set cacheFile to ""
+
 	if playlistURL contains "/playlist/" then
-		set syncCmd to quoted form of spotdlPython & " " & quoted form of syncScript & ¬
+		-- Extract the playlist ID (e.g. "3ErdJvkPPIKFjpu3gxz0Zw") from the URL.
+		set playlistId to do shell script "python3 -c \"import re,sys; m=re.search(r'playlist/([A-Za-z0-9]+)',sys.argv[1]); print(m.group(1) if m else '')\" " & quoted form of playlistURL & " 2>/dev/null"
+
+		set precheckOut to do shell script ¬
+			quoted form of spotdlPython & " " & quoted form of precheckScript & ¬
 			" --url " & quoted form of playlistURL & ¬
-			" --output-base " & quoted form of (musicDir & "Soundloader") & ¬
-			" --spotdl " & quoted form of spotdlPath & "; "
+			" --cache-dir " & quoted form of cacheDir & ¬
+			" 2>/dev/null" without altering line endings
+
+		-- Parse STATUS|RETRY_AFTER|CACHE_FILE|PLAYLIST_NAME|TRACK_COUNT|CACHE_AGE_HOURS
+		set AppleScript's text item delimiters to "|"
+		set precheckParts to text items of precheckOut
+		set AppleScript's text item delimiters to ""
+
+		set precheckStatus to item 1 of precheckParts
+		set retryAfterSec to (item 2 of precheckParts) as integer
+		set cachedFilePath to item 3 of precheckParts
+		set cachedName to item 4 of precheckParts
+		set cachedCount to item 5 of precheckParts
+		set cachedAgeH to item 6 of precheckParts
+
+		-- Format the retry-after duration for human display.
+		set retryStr to ""
+		if retryAfterSec > 0 then
+			set rHours to retryAfterSec div 3600
+			set rMins to (retryAfterSec mod 3600) div 60
+			if rHours > 0 then
+				set retryStr to rHours & "h " & rMins & "min"
+			else
+				set retryStr to rMins & "min"
+			end if
+		end if
+
+		-- ── Case 1: rate-limited, no cache → hard stop ────────────────────────
+		if precheckStatus is "RATE_LIMITED" then
+			set rlChoice to display alert "Spotify API Rate Limited" ¬
+				message "Tes credentials Spotify sont bloqués pendant encore " & retryStr & "." & return & return & ¬
+				"Pour télécharger maintenant :" & return & ¬
+				"1. Ouvre le Spotify Developer Dashboard" & return & ¬
+				"2. Crée une nouvelle app (2 min)" & return & ¬
+				"3. Reviens dans  ⚙ Settings → Edit Spotify Credentials" ¬
+				buttons {"Fermer", "Ouvrir Dashboard"} default button "Ouvrir Dashboard" as critical
+			if button returned of rlChoice is "Ouvrir Dashboard" then
+				open location "https://developer.spotify.com/dashboard"
+			end if
+			return
+
+		-- ── Case 2: rate-limited, cache available → propose le cache ──────────
+		else if precheckStatus is "RATE_LIMITED_CACHE" then
+			set rlcChoice to display alert "Spotify API Rate Limited" ¬
+				message "L'API Spotify est bloquée encore " & retryStr & "." & return & return & ¬
+				"Mais tu as un cache local de " & quote & cachedName & quote & " (" & cachedCount & " titres, " & cachedAgeH & "h)." & return & return & ¬
+				"Utiliser le cache pour continuer le download ?" ¬
+				buttons {"Annuler", "Ouvrir Dashboard", "Utiliser le cache"} ¬
+				default button "Utiliser le cache" as warning
+			set rlcBtn to button returned of rlcChoice
+			if rlcBtn is "Annuler" then return
+			if rlcBtn is "Ouvrir Dashboard" then
+				open location "https://developer.spotify.com/dashboard"
+				return
+			end if
+			-- "Utiliser le cache"
+			set useCache to true
+			set cacheFile to cachedFilePath
+
+		-- ── Case 3: API OK, fresh cache available → laisser le choix ──────────
+		else if precheckStatus is "OK_CACHE" then
+			set cacheChoice to button returned of (display dialog ¬
+				"Cache disponible pour " & quote & cachedName & quote & " (" & cachedCount & " titres, mis à jour il y a " & cachedAgeH & "h)." & return & return & ¬
+				"Utiliser le cache (rapide, 0 appel Spotify) ou refaire le fetch ?" ¬
+				buttons {"Annuler", "Refaire le fetch", "Utiliser le cache"} ¬
+				default button "Utiliser le cache" cancel button "Annuler" ¬
+				with title "Cache disponible")
+			if cacheChoice is "Utiliser le cache" then
+				set useCache to true
+				set cacheFile to cachedFilePath
+			end if
+			-- "Refaire le fetch" → useCache reste false, fetch normal
+		end if
+		-- Case 4: precheckStatus is "OK" (no cache) → proceed silently
+	end if
+
+	-- ── Build commands ────────────────────────────────────────────────────────
+	set syncCmd to ""
+	set dlTarget to quoted form of playlistURL  -- default: download by URL
+
+	if playlistURL contains "/playlist/" then
+		if useCache then
+			-- Use cached .spotdl file: sync reconciles local files, spotdl downloads
+			-- only missing tracks — no Spotify API call in either step.
+			set syncCmd to quoted form of spotdlPython & " " & quoted form of syncScript & ¬
+				" --url " & quoted form of playlistURL & ¬
+				" --output-base " & quoted form of (musicDir & "Soundloader") & ¬
+				" --spotdl " & quoted form of spotdlPath & ¬
+				" --cache-file " & quoted form of cacheFile & "; "
+			set dlTarget to "--save-file " & quoted form of cacheFile
+		else
+			-- Fresh fetch: sync saves result to cache for next time.
+			set syncCmd to quoted form of spotdlPython & " " & quoted form of syncScript & ¬
+				" --url " & quoted form of playlistURL & ¬
+				" --output-base " & quoted form of (musicDir & "Soundloader") & ¬
+				" --spotdl " & quoted form of spotdlPath & ¬
+				" --cache-dir " & quoted form of cacheDir & "; "
+		end if
 	end if
 
 	set cmd to "source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; " & ¬
 		syncCmd & ¬
-		spotdlPath & " --config --user-auth download " & quoted form of playlistURL & ¬
+		spotdlPath & " --config --user-auth download " & dlTarget & ¬
 		" --bitrate 320k --format mp3 --threads 4 --scan-for-songs" & ¬
 		" --output " & quoted form of outputTemplate & ¬
 		"; osascript -e 'display notification \"Spotify download complete\" with title \"Soundloader\" sound name \"Glass\"'" & ¬

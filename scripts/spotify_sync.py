@@ -21,10 +21,9 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
+import time
 
 from mutagen.id3 import ID3, ID3NoHeaderError
 from spotdl.types.song import Song
@@ -54,26 +53,162 @@ def read_tags(path: Path):
     return title, artists
 
 
-def run_spotdl_save(spotdl_path: str, url: str) -> list[dict]:
-    with tempfile.NamedTemporaryFile(suffix=".spotdl", delete=False) as tf:
-        spotdl_file = tf.name
+def _spotdl_config() -> dict:
+    """Read ~/.spotdl/config.json, return {} on error."""
     try:
-        result = subprocess.run(
-            [spotdl_path, "--config", "--user-auth", "save", url,
-             "--save-file", spotdl_file],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            sys.stderr.write(result.stderr)
-            sys.stderr.write("\nspotdl save failed; skipping pre-sync.\n")
-            return []
-        with open(spotdl_file) as f:
+        cfg_path = Path.home() / ".spotdl" / "config.json"
+        with open(cfg_path) as f:
             return json.load(f)
-    finally:
-        try:
-            os.remove(spotdl_file)
-        except OSError:
-            pass
+    except Exception:
+        return {}
+
+
+def _spotipy_client():
+    """
+    Return an authenticated spotipy.Spotify instance.
+    Tries user-auth first (cached token), falls back to client credentials.
+    Never opens a browser.
+    """
+    from spotipy import Spotify
+    from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials, CacheFileHandler
+
+    cfg = _spotdl_config()
+    cid = cfg.get("client_id", "")
+    cs  = cfg.get("client_secret", "")
+    if not cid or not cs:
+        raise RuntimeError("No Spotify credentials in ~/.spotdl/config.json")
+
+    cache_path = str(Path.home() / ".spotdl" / ".spotipy")
+    handler = CacheFileHandler(cache_path)
+
+    # Try user-auth with cached token (no browser).
+    cached = handler.get_cached_token()
+    if cached:
+        auth = SpotifyOAuth(
+            client_id=cid,
+            client_secret=cs,
+            redirect_uri="http://127.0.0.1:9900/",
+            scope="playlist-read-private,playlist-read-collaborative",
+            cache_handler=handler,
+            open_browser=False,
+        )
+        return Spotify(auth_manager=auth)
+
+    # Fall back to client credentials (public playlists only).
+    return Spotify(auth_manager=SpotifyClientCredentials(
+        client_id=cid,
+        client_secret=cs,
+    ))
+
+
+def run_spotdl_save(spotdl_path: str, url: str) -> list[dict]:
+    """
+    Fetch playlist tracks from the Spotify API directly (no subprocess, no
+    YouTube-Music check). Returns a list of song dicts compatible with
+    Song.from_dict() — only the fields needed for create_file_name() are
+    populated; the rest get safe defaults.
+    """
+    import re as _re
+    m = _re.search(r"playlist/([A-Za-z0-9]+)", url)
+    if not m:
+        sys.stderr.write("[sync] Not a playlist URL; skipping pre-sync.\n")
+        return []
+    playlist_id = m.group(1)
+
+    try:
+        sp = _spotipy_client()
+
+        # Playlist name.
+        info = sp.playlist(playlist_id, fields="name")
+        list_name = (info or {}).get("name", "")
+        if not list_name:
+            return []
+
+        # All tracks (paginated).
+        # Note: Spotify API now uses "item" key instead of "track" in playlist items
+        # (API change ~2025). We support both for backwards compatibility.
+        raw_items: list[dict] = []
+        page = sp.playlist_tracks(playlist_id)
+        while page:
+            raw_items.extend(page.get("items", []))
+            page = sp.next(page) if page.get("next") else None
+
+        total = len(raw_items)
+        songs: list[dict] = []
+        for pos, item in enumerate(raw_items, 1):
+            # Support both old ("track") and new ("item") Spotify API response keys
+            track = (item or {}).get("item") or (item or {}).get("track")
+            if not track or track.get("is_local"):
+                continue
+            # Skip episodes and non-track items
+            if track.get("type") not in ("track", None):
+                continue
+            artists = [a["name"] for a in track.get("artists", [])]
+            if not artists:
+                continue
+            songs.append({
+                # Fields used by create_file_name
+                "name":         track["name"],
+                "artists":      artists,
+                "artist":       artists[0],
+                "list_name":    list_name,
+                "list_position": pos,
+                "list_length":  total,
+                # Required non-optional fields in Song dataclass (safe defaults)
+                "genres":       [],
+                "disc_number":  1,
+                "disc_count":   1,
+                "album_name":   track.get("album", {}).get("name", ""),
+                "album_artist": artists[0],
+                "duration":     (track.get("duration_ms") or 0) // 1000,
+                "year":         0,
+                "date":         "",
+                "track_number": track.get("track_number") or 0,
+                "tracks_count": 0,
+                "song_id":      track.get("id", ""),
+                "explicit":     track.get("explicit", False),
+                "publisher":    "",
+                "url":          f"https://open.spotify.com/track/{track.get('id', '')}",
+                "isrc":         (track.get("external_ids") or {}).get("isrc"),
+                "cover_url":    None,
+                "copyright_text": None,
+            })
+
+        if songs:
+            print(f"[sync] Fetched {len(songs)} tracks from '{list_name}'.")
+        return songs
+
+    except Exception as exc:
+        sys.stderr.write(f"[sync] Spotify fetch failed: {exc}; skipping pre-sync.\n")
+        return []
+
+
+def load_from_cache(cache_file: str) -> list[dict]:
+    """Load songs_data from a previously saved .spotdl cache file."""
+    try:
+        with open(cache_file) as f:
+            data = json.load(f)
+        songs = data if isinstance(data, list) else data.get("songs", [])
+        name = songs[0].get("list_name", "?") if songs else "?"
+        print(f"[sync] Using cached playlist data: {name} ({len(songs)} tracks).")
+        return songs
+    except Exception as e:
+        print(f"[sync] Cache read failed ({e}); will fetch from Spotify.", file=sys.stderr)
+        return []
+
+
+def save_to_cache(songs_data: list[dict], cache_dir: str, playlist_id: str) -> None:
+    """Persist songs_data to cache so subsequent runs can reuse it."""
+    if not cache_dir or not playlist_id or not songs_data:
+        return
+    cache_path = Path(cache_dir) / f"{playlist_id}.spotdl"
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(songs_data, f, ensure_ascii=False)
+        print(f"[sync] Playlist metadata cached → {cache_path.name}")
+    except Exception as e:
+        print(f"[sync] Cache write failed: {e}", file=sys.stderr)
 
 
 def main() -> int:
@@ -82,9 +217,25 @@ def main() -> int:
     ap.add_argument("--output-base", required=True,
                     help="Base directory ending in '/Soundloader'")
     ap.add_argument("--spotdl", required=True)
+    ap.add_argument("--cache-file", default="",
+                    help="Path to a .spotdl cache file to use instead of fetching from Spotify.")
+    ap.add_argument("--cache-dir", default="",
+                    help="Directory where fetched playlist data should be cached.")
     args = ap.parse_args()
 
-    songs_data = run_spotdl_save(args.spotdl, args.url)
+    # Derive playlist ID from URL for cache operations.
+    import re as _re
+    _m = _re.search(r"playlist/([A-Za-z0-9]+)", args.url)
+    playlist_id = _m.group(1) if _m else ""
+
+    # Resolve songs_data: prefer supplied cache file, fall back to Spotify fetch.
+    if args.cache_file:
+        songs_data = load_from_cache(args.cache_file)
+    else:
+        songs_data = run_spotdl_save(args.spotdl, args.url)
+        if songs_data and args.cache_dir and playlist_id:
+            save_to_cache(songs_data, args.cache_dir, playlist_id)
+
     if not songs_data:
         return 0  # Non-fatal: let the download proceed without pre-sync.
 
