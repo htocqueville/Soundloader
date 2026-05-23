@@ -174,6 +174,41 @@ else
     warn "spotdl entry_point.py not found — skipping YTM patch"
 fi
 
+# ── 7b2. Patch spotdl: skip Spotify search for un-tagged files during scan ────
+# spotdl's gather_known_songs() calls the Spotify search API for every MP3
+# whose ID3 tags lack a WOAS (spotify URL) frame. On large libraries this
+# burns the API quota in seconds (the daily limit is ~25k requests).
+# Patch it to silently skip those files instead — they just won't be picked
+# up by cross-folder deduplication, which is acceptable.
+SEARCH_PY="$(find "$PIPX_VENVS/spotdl/lib" -name "search.py" -path "*/spotdl/utils/*" 2>/dev/null | head -1)"
+if [ -n "$SEARCH_PY" ]; then
+    info "Patching spotdl gather_known_songs to skip API calls on un-tagged files..."
+    python3 - "$SEARCH_PY" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    src = f.read()
+old = ('        # If the songs doesn\'t have metadata, try to get it from the filename\n'
+       '        if song is None or song.url is None:\n'
+       '            search_results = get_search_results(path.stem)\n'
+       '            if len(search_results) == 0:\n'
+       '                continue\n'
+       '\n'
+       '            song = search_results[0]')
+new = ('        # Skip files without proper metadata instead of calling the Spotify\n'
+       '        # search API (patched by Soundloader setup.sh to preserve API quota).\n'
+       '        if song is None or song.url is None:\n'
+       '            continue')
+if old in src:
+    with open(path, 'w') as f:
+        f.write(src.replace(old, new))
+    print("Patch applied.")
+else:
+    print("Patch already applied or signature changed; skipping.")
+PYEOF
+    success "spotdl gather_known_songs patch done"
+fi
+
 # ── 7c. Strip dead audio providers from spotdl config ─────────────────────────
 # piped.video stopped serving JSON in 2025 (it now returns the SPA HTML),
 # so spotdl trips on JSONDecodeError for every track when it falls back to
