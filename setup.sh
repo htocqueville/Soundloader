@@ -174,6 +174,234 @@ else
     warn "spotdl entry_point.py not found — skipping YTM patch"
 fi
 
+# ── 7b1b. Patch spotdl YouTube provider: use yt-dlp instead of broken pytube ──
+# pytube 15.x cannot parse YouTube's modern search result renderers
+# (lockupViewModel, gridShelfViewModel) so every search hit comes back with
+# duration=0 and view_count=0, and spotdl's matcher rejects them all
+# ("No results found for song"). Replace get_results() with a yt-dlp
+# implementation. yt-dlp is already a transitive dependency of spotdl and
+# tracks YouTube changes far more aggressively.
+YOUTUBE_PROVIDER="$(find "$PIPX_VENVS/spotdl/lib" -name "youtube.py" -path "*/spotdl/providers/audio/*" 2>/dev/null | head -1)"
+if [ -n "$YOUTUBE_PROVIDER" ]; then
+    info "Patching spotdl YouTube provider to use yt-dlp for search..."
+    python3 - "$YOUTUBE_PROVIDER" <<'PYEOF'
+import sys, re
+path = sys.argv[1]
+with open(path) as f:
+    src = f.read()
+if "# SOUNDLOADER-PATCH: use yt-dlp" in src:
+    print("Already patched.")
+    sys.exit(0)
+old_re = re.compile(
+    r'    def get_results\(\s*\n'
+    r'        self, search_term: str, \*_args, \*\*_kwargs\s*\n'
+    r'    \) -> List\[Result\]:.*?return results\n',
+    re.DOTALL,
+)
+new_method = '''    def get_results(
+        self, search_term: str, *_args, **_kwargs
+    ) -> List[Result]:  # pylint: disable=W0221
+        """
+        Get results from YouTube.
+
+        # SOUNDLOADER-PATCH: use yt-dlp instead of pytube (pytube cannot parse
+        # YouTube's modern lockupViewModel/gridShelfViewModel renderers, so it
+        # returns results with duration=0 and view_count=0, which causes
+        # spotdl's matcher to discard every hit).
+        """
+        import yt_dlp
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": True,
+            "skip_download": True,
+        }
+
+        results: List[Result] = []
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"ytsearch20:{search_term}", download=False)
+        except Exception:
+            return []
+
+        if not info or not info.get("entries"):
+            return []
+
+        for entry in info["entries"]:
+            if not entry:
+                continue
+            video_id = entry.get("id", "")
+            if not video_id:
+                continue
+            results.append(
+                Result(
+                    source=self.name,
+                    url=entry.get("url") or f"https://www.youtube.com/watch?v={video_id}",
+                    verified=False,
+                    name=entry.get("title", "") or "",
+                    duration=int(entry.get("duration") or 0),
+                    author=entry.get("uploader") or entry.get("channel") or "",
+                    search_query=search_term,
+                    views=int(entry.get("view_count") or 0),
+                    result_id=video_id,
+                )
+            )
+        return results
+'''
+if old_re.search(src):
+    src = old_re.sub(new_method, src)
+    with open(path, 'w') as f:
+        f.write(src)
+    print("Patch applied.")
+else:
+    print("Could not locate get_results signature; skipping.")
+PYEOF
+    success "spotdl YouTube provider patch done"
+fi
+
+# ── 7b1c. Patch spotdl matcher: tolerate duration & secondary-artist gaps ─────
+# Two real-world matching failures spotdl rejects too aggressively:
+#   • Spotify radio edit vs YouTube extended mix (duration differs by 100s+).
+#   • Spotify track with multiple credited artists, YouTube title only lists
+#     the main one — and spotdl's slug normaliser collapses Marius Acke /
+#     mariusacke / marius-acke inconsistently, so artists_match drops to 0
+#     on what is actually a perfect match.
+# Replace the strict artists/time filters with a smarter pass-condition:
+#   (a) name_match ≥ 80 AND time_match ≥ 50, OR
+#   (b) average_match ≥ 60.
+MATCHING_PY="$(find "$PIPX_VENVS/spotdl/lib" -name "matching.py" -path "*/spotdl/utils/*" 2>/dev/null | head -1)"
+if [ -n "$MATCHING_PY" ]; then
+    info "Patching spotdl matcher for lenient duration / artists filters..."
+    python3 - "$MATCHING_PY" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    src = f.read()
+if "# SOUNDLOADER-PATCH: artists filter disabled" in src:
+    print("Already patched.")
+    sys.exit(0)
+
+old_artists = '''        # Ignore results with artists match lower than 70%
+        if artists_match < 70 and result.source != "slider.kz":
+            debug(
+                song.song_id,
+                result.result_id,
+                "Skipping result due to artists match lower than 70%",
+            )
+            continue'''
+new_artists = '''        # SOUNDLOADER-PATCH: artists filter disabled — slug normalisation
+        # makes artists_match collapse to 0% on perfect matches (e.g.
+        # "Marius Acke" vs "mariusacke"). Rely on the combined name+time
+        # check below instead.
+        pass'''
+
+old_time = '''        # Skip results with time match lower than 25%
+        if time_match < 25:
+            debug(
+                song.song_id,
+                result.result_id,
+                "Skipping result due to time match lower than 25%",
+            )
+            continue
+
+        # If the time match is lower than 50%
+        # and the average match is lower than 75%
+        # we skip the result
+        if time_match < 50 and average_match < 75:
+            debug(
+                song.song_id,
+                result.result_id,
+                "Skipping result due to time match < 50% and average match < 75%",
+            )
+            continue'''
+new_time = '''        # SOUNDLOADER-PATCH: combined name+time OR average filter.
+        # Keep a result if (name+time are both strong) OR (combined avg ≥ 60).
+        strong_name_time = (name_match >= 80) and (time_match >= 50)
+        if not strong_name_time and average_match < 60:
+            debug(
+                song.song_id,
+                result.result_id,
+                f"Skipping: name={name_match:.0f} time={time_match:.0f} avg={average_match:.0f}",
+            )
+            continue'''
+
+if old_artists in src and old_time in src:
+    src = src.replace(old_artists, new_artists).replace(old_time, new_time)
+    with open(path, 'w') as f:
+        f.write(src)
+    print("Patch applied.")
+else:
+    print("Patch source not found; signature may have changed.")
+PYEOF
+    success "spotdl matcher patch done"
+fi
+
+# ── 7b1d. Patch spotdl search: validate top candidate before returning ────────
+# When the top-scored YouTube hit is geo-blocked / removed / age-gated,
+# spotdl currently returns that URL anyway and the whole download fails for
+# that song. Walk the top-5 candidates in score order, fetch lightweight
+# yt-dlp metadata for each, and return the first one that's actually
+# fetchable.
+BASE_PY="$(find "$PIPX_VENVS/spotdl/lib" -name "base.py" -path "*/spotdl/providers/audio/*" 2>/dev/null | head -1)"
+if [ -n "$BASE_PY" ]; then
+    info "Patching spotdl audio search to validate candidates with yt-dlp..."
+    python3 - "$BASE_PY" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    src = f.read()
+if "# SOUNDLOADER-PATCH: validate" in src:
+    print("Already patched.")
+    sys.exit(0)
+old = '''        # get the result with highest score
+        best_result, best_score = self.get_best_result(results)
+        logger.debug(
+            "[%s] Returning best result %s with score %s",
+            song.song_id,
+            best_result.url,
+            best_score,
+        )
+
+        return best_result.url'''
+new = '''        # SOUNDLOADER-PATCH: validate top candidates with yt-dlp before
+        # returning. Walk the top-5 by score, fetch lightweight metadata, and
+        # return the first one yt-dlp can actually reach. Falls back to the
+        # upstream best result if every candidate is unfetchable.
+        sorted_candidates = sorted(
+            results.items(), key=lambda x: x[1], reverse=True
+        )
+        for candidate, candidate_score in sorted_candidates[:5]:
+            try:
+                self.get_download_metadata(candidate.url, download=False)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.debug(
+                    "[%s] Candidate %s (score %s) unfetchable: %s",
+                    song.song_id, candidate.url, candidate_score, exc,
+                )
+                continue
+            logger.debug(
+                "[%s] Returning validated best %s with score %s",
+                song.song_id, candidate.url, candidate_score,
+            )
+            return candidate.url
+
+        best_result, best_score = self.get_best_result(results)
+        logger.debug(
+            "[%s] All candidates unfetchable; returning unvalidated best %s",
+            song.song_id, best_result.url,
+        )
+        return best_result.url'''
+if old in src:
+    with open(path, 'w') as f:
+        f.write(src.replace(old, new))
+    print("Patch applied.")
+else:
+    print("Pattern not found.")
+PYEOF
+    success "spotdl search validation patch done"
+fi
+
 # ── 7b2. Patch spotdl: skip Spotify search for un-tagged files during scan ────
 # spotdl's gather_known_songs() calls the Spotify search API for every MP3
 # whose ID3 tags lack a WOAS (spotify URL) frame. On large libraries this
