@@ -379,12 +379,15 @@ on handleSpotify(playlistURL)
 		if useCache then
 			-- Use cached .spotdl file: sync reconciles local files, spotdl downloads
 			-- only missing tracks — no Spotify API call in either step.
+			-- IMPORTANT: spotdl reads a .spotdl save file when it is passed AS THE
+			-- QUERY (e.g. `spotdl download cache.spotdl`). The --save-file flag is
+			-- for WRITING (e.g. `spotdl save`), not for input.
 			set syncCmd to quoted form of spotdlPython & " " & quoted form of syncScript & ¬
 				" --url " & quoted form of playlistURL & ¬
 				" --output-base " & quoted form of (musicDir & "Soundloader") & ¬
 				" --spotdl " & quoted form of spotdlPath & ¬
 				" --cache-file " & quoted form of cacheFile & "; "
-			set dlTarget to "--save-file " & quoted form of cacheFile
+			set dlTarget to quoted form of cacheFile
 		else
 			-- Fresh fetch: sync saves result to cache for next time.
 			set syncCmd to quoted form of spotdlPython & " " & quoted form of syncScript & ¬

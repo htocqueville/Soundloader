@@ -146,31 +146,48 @@ def run_spotdl_save(spotdl_path: str, url: str) -> list[dict]:
             artists = [a["name"] for a in track.get("artists", [])]
             if not artists:
                 continue
+            album = track.get("album") or {}
+            album_artists = [a["name"] for a in album.get("artists", [])]
+            release_date = album.get("release_date", "") or ""
+            year = 0
+            if release_date:
+                try:
+                    year = int(release_date[:4])
+                except ValueError:
+                    pass
+
+            # IMPORTANT: every Optional field in Song dataclass that spotdl's
+            # downloader.search_and_download() checks for None must be set to
+            # a non-None value here. Otherwise spotdl triggers reinit_song()
+            # which makes 3 Spotify API calls per song (track + artist + album).
+            # For 49 songs that's ~150 API calls and the user's daily quota
+            # is exhausted in seconds.
             songs.append({
-                # Fields used by create_file_name
                 "name":         track["name"],
                 "artists":      artists,
                 "artist":       artists[0],
                 "list_name":    list_name,
                 "list_position": pos,
                 "list_length":  total,
-                # Required non-optional fields in Song dataclass (safe defaults)
                 "genres":       [],
-                "disc_number":  1,
+                "disc_number":  track.get("disc_number") or 1,
                 "disc_count":   1,
-                "album_name":   track.get("album", {}).get("name", ""),
-                "album_artist": artists[0],
+                "album_name":   album.get("name", ""),
+                "album_artist": album_artists[0] if album_artists else artists[0],
+                "album_id":     album.get("id", ""),
+                "album_type":   album.get("album_type", "single"),
                 "duration":     (track.get("duration_ms") or 0) // 1000,
-                "year":         0,
-                "date":         "",
+                "year":         year,
+                "date":         release_date,
                 "track_number": track.get("track_number") or 0,
-                "tracks_count": 0,
+                "tracks_count": album.get("total_tracks") or 1,
                 "song_id":      track.get("id", ""),
+                "artist_id":    (track.get("artists") or [{}])[0].get("id", ""),
                 "explicit":     track.get("explicit", False),
                 "publisher":    "",
                 "url":          f"https://open.spotify.com/track/{track.get('id', '')}",
                 "isrc":         (track.get("external_ids") or {}).get("isrc"),
-                "cover_url":    None,
+                "cover_url":    (album.get("images") or [{}])[0].get("url"),
                 "copyright_text": None,
             })
 

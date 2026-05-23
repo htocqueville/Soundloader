@@ -174,6 +174,31 @@ else
     warn "spotdl entry_point.py not found — skipping YTM patch"
 fi
 
+# ── 7c. Strip dead audio providers from spotdl config ─────────────────────────
+# piped.video stopped serving JSON in 2025 (it now returns the SPA HTML),
+# so spotdl trips on JSONDecodeError for every track when it falls back to
+# piped. Drop it from the user's audio_providers if present.
+SPOTDL_CONFIG="$HOME/.spotdl/config.json"
+if [ -f "$SPOTDL_CONFIG" ]; then
+    info "Cleaning spotdl audio_providers (dropping piped if present)..."
+    python3 - "$SPOTDL_CONFIG" <<'PYEOF'
+import json, sys
+p = sys.argv[1]
+try:
+    cfg = json.load(open(p))
+except Exception:
+    sys.exit(0)
+providers = cfg.get("audio_providers", [])
+if "piped" in providers:
+    cfg["audio_providers"] = [a for a in providers if a != "piped"]
+    json.dump(cfg, open(p, "w"), indent=2)
+    print("Removed 'piped' from audio_providers.")
+else:
+    print("Already clean.")
+PYEOF
+    success "spotdl config cleaned"
+fi
+
 # ── 8. Compile AppleScript ────────────────────────────────────────────────────
 info "Compiling Soundloader.app..."
 
