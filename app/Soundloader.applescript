@@ -435,9 +435,31 @@ end handleSpotify
 
 on handleSoundCloud(scURL)
 	set musicDir to POSIX path of (path to music folder)
-	set isSet to (scURL contains "/sets/")
+
+	-- Detect playlists (sets) by asking yt-dlp instead of sniffing the URL:
+	-- short share links (on.soundcloud.com/…) don't contain "/sets/", so URL
+	-- sniffing sends whole playlists into the flat SoundCloud/ folder.
+	-- The probe prints the playlist title of the first entry ("NA" for a
+	-- single track) in a couple of seconds, without downloading anything.
+	set isSet to false
+	try
+		set probeTitle to do shell script ytdlpPath & ¬
+			" --flat-playlist --playlist-items 1 --no-warnings --print playlist_title " & ¬
+			quoted form of scURL & " 2>/dev/null | head -1"
+		if probeTitle is not "" and probeTitle is not "NA" then
+			set isSet to true
+		else if probeTitle is "" then
+			-- Probe failed (network hiccup): fall back to URL sniffing.
+			set isSet to (scURL contains "/sets/")
+		end if
+	on error
+		set isSet to (scURL contains "/sets/")
+	end try
 
 	if isSet then
+		-- Same layout as Spotify playlists: one folder per playlist, named
+		-- after it — so a playlist with the same name on both platforms
+		-- lands in the same folder.
 		set outputTemplate to musicDir & "Soundloader/%(playlist_title)s/%(playlist_index)02d - %(uploader)s - %(title)s.%(ext)s"
 	else
 		set outputTemplate to musicDir & "Soundloader/SoundCloud/%(uploader)s - %(title)s.%(ext)s"
