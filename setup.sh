@@ -87,16 +87,23 @@ fi
 
 success "Using $PYTHON_FOR_SPOTDL for spotdl"
 
-# ── 5. spotdl (nyekuuu fork — adds --user-auth OAuth for Spotify) ─────────────
+# ── 5. spotdl (official PyPI, >=4.5.2) ────────────────────────────────────────
+# The nyekuuu fork (previously used for --user-auth OAuth) is stuck at 4.4.3
+# and broke when Spotify's Feb–Mar 2026 API migration removed the
+# /playlists/{id}/tracks endpoint (403 Forbidden on every playlist).
+# Official spotdl has --user-auth upstream and, since 4.4.4, fetches playlist
+# data without the restricted Web API. Note: since that migration, dev-mode
+# Spotify apps can only read the items of the authenticated user's OWN
+# playlists — other accounts' playlists return metadata only, by policy.
 info "Checking spotdl..."
-SPOTDL_FORK="git+https://github.com/nyekuuu/spotify-downloader.git"
+SPOTDL_SPEC="spotdl>=4.5.2"
 if pipx list 2>/dev/null | grep -q "spotdl"; then
-    info "Upgrading spotdl from nyekuuu fork..."
-    pipx install --force --python "$PYTHON_FOR_SPOTDL" "$SPOTDL_FORK" \
+    info "Upgrading spotdl from PyPI..."
+    pipx install --force --python "$PYTHON_FOR_SPOTDL" "$SPOTDL_SPEC" \
         || warn "spotdl upgrade failed, keeping existing version"
 else
-    info "Installing spotdl from nyekuuu fork..."
-    pipx install --python "$PYTHON_FOR_SPOTDL" "$SPOTDL_FORK"
+    info "Installing spotdl from PyPI..."
+    pipx install --python "$PYTHON_FOR_SPOTDL" "$SPOTDL_SPEC"
 fi
 
 # ── 6. yt-dlp (always via brew — pip/system installs use outdated Python) ─────
@@ -131,134 +138,6 @@ if [ -z "$YTDLP_PATH" ]; then
     error "yt-dlp binary not found. Try: brew install yt-dlp"
 fi
 success "yt-dlp: $YTDLP_PATH"
-
-# ── 7b. Patch spotdl: downgrade YouTube Music block from crash to warning ─────
-# spotdl raises DownloaderError if YTM is temporarily IP-blocked, even when
-# fallback providers are configured. This patch makes it log a warning and
-# drop youtube-music from the provider list for that run instead of aborting.
-info "Patching spotdl YTM block to graceful fallback..."
-ENTRY_POINT="$(find "$PIPX_VENVS/spotdl/lib" -name "entry_point.py" -path "*/spotdl/console/*" 2>/dev/null | head -1)"
-if [ -n "$ENTRY_POINT" ]; then
-    python3 - "$ENTRY_POINT" <<'PYEOF'
-import sys
-
-path = sys.argv[1]
-with open(path) as f:
-    src = f.read()
-
-old = '            raise DownloaderError(\n                "You are blocked by YouTube Music. "\n                "Please use a VPN, change youtube-music to piped, or use other audio providers"\n            )'
-
-new = ('            logger.warning(\n'
-       '                "YouTube Music is currently unavailable (IP block or regional restriction). "\n'
-       '                "Falling back to remaining audio providers: %s",\n'
-       '                [p for p in downloader_settings["audio_providers"] if p != "youtube-music"],\n'
-       '            )\n'
-       '            downloader_settings["audio_providers"] = [\n'
-       '                p for p in downloader_settings["audio_providers"] if p != "youtube-music"\n'
-       '            ]\n'
-       '            if not downloader_settings["audio_providers"]:\n'
-       '                raise DownloaderError(\n'
-       '                    "YouTube Music is blocked and no fallback audio providers are configured. "\n'
-       '                    "Add \'youtube\' or \'piped\' to audio_providers in your spotdl config."\n'
-       '                )')
-
-if old in src:
-    with open(path, 'w') as f:
-        f.write(src.replace(old, new))
-    print("Patch applied.")
-else:
-    print("Already patched or source changed — skipping.")
-PYEOF
-    success "spotdl YTM patch done"
-else
-    warn "spotdl entry_point.py not found — skipping YTM patch"
-fi
-
-# ── 7b1b. Patch spotdl YouTube provider: use yt-dlp instead of broken pytube ──
-# pytube 15.x cannot parse YouTube's modern search result renderers
-# (lockupViewModel, gridShelfViewModel) so every search hit comes back with
-# duration=0 and view_count=0, and spotdl's matcher rejects them all
-# ("No results found for song"). Replace get_results() with a yt-dlp
-# implementation. yt-dlp is already a transitive dependency of spotdl and
-# tracks YouTube changes far more aggressively.
-YOUTUBE_PROVIDER="$(find "$PIPX_VENVS/spotdl/lib" -name "youtube.py" -path "*/spotdl/providers/audio/*" 2>/dev/null | head -1)"
-if [ -n "$YOUTUBE_PROVIDER" ]; then
-    info "Patching spotdl YouTube provider to use yt-dlp for search..."
-    python3 - "$YOUTUBE_PROVIDER" <<'PYEOF'
-import sys, re
-path = sys.argv[1]
-with open(path) as f:
-    src = f.read()
-if "# SOUNDLOADER-PATCH: use yt-dlp" in src:
-    print("Already patched.")
-    sys.exit(0)
-old_re = re.compile(
-    r'    def get_results\(\s*\n'
-    r'        self, search_term: str, \*_args, \*\*_kwargs\s*\n'
-    r'    \) -> List\[Result\]:.*?return results\n',
-    re.DOTALL,
-)
-new_method = '''    def get_results(
-        self, search_term: str, *_args, **_kwargs
-    ) -> List[Result]:  # pylint: disable=W0221
-        """
-        Get results from YouTube.
-
-        # SOUNDLOADER-PATCH: use yt-dlp instead of pytube (pytube cannot parse
-        # YouTube's modern lockupViewModel/gridShelfViewModel renderers, so it
-        # returns results with duration=0 and view_count=0, which causes
-        # spotdl's matcher to discard every hit).
-        """
-        import yt_dlp
-
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "extract_flat": True,
-            "skip_download": True,
-        }
-
-        results: List[Result] = []
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"ytsearch20:{search_term}", download=False)
-        except Exception:
-            return []
-
-        if not info or not info.get("entries"):
-            return []
-
-        for entry in info["entries"]:
-            if not entry:
-                continue
-            video_id = entry.get("id", "")
-            if not video_id:
-                continue
-            results.append(
-                Result(
-                    source=self.name,
-                    url=entry.get("url") or f"https://www.youtube.com/watch?v={video_id}",
-                    verified=False,
-                    name=entry.get("title", "") or "",
-                    duration=int(entry.get("duration") or 0),
-                    author=entry.get("uploader") or entry.get("channel") or "",
-                    search_query=search_term,
-                    views=int(entry.get("view_count") or 0),
-                    result_id=video_id,
-                )
-            )
-        return results
-'''
-if old_re.search(src):
-    src = old_re.sub(new_method, src)
-    with open(path, 'w') as f:
-        f.write(src)
-    print("Patch applied.")
-else:
-    print("Could not locate get_results signature; skipping.")
-PYEOF
-    success "spotdl YouTube provider patch done"
-fi
 
 # ── 7b1c. Patch spotdl matcher: tolerate duration & secondary-artist gaps ─────
 # Two real-world matching failures spotdl rejects too aggressively:
