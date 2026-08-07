@@ -216,12 +216,14 @@ PYEOF
     success "spotdl matcher patch done"
 fi
 
-# ── 7b1d. Patch spotdl search: validate top candidate before returning ────────
-# When the top-scored YouTube hit is geo-blocked / removed / age-gated,
-# spotdl currently returns that URL anyway and the whole download fails for
-# that song. Walk the top-5 candidates in score order, fetch lightweight
-# yt-dlp metadata for each, and return the first one that's actually
-# fetchable.
+# ── 7b1d. Patch spotdl search: validate candidates before returning ───────────
+# When a search hit is age-restricted / removed / geo-blocked, spotdl returns
+# its URL anyway and the download of that song fails (e.g. "Sign in to
+# confirm your age" on explicit tracks). search() has several early returns
+# (ISRC shortcuts, verified best ≥80) plus the final best-result block: guard
+# every one of them with a yt-dlp reachability check (_sl_fetchable) so an
+# unfetchable candidate falls through to the next candidate — or the next
+# audio provider — instead of failing the song.
 BASE_PY="$(find "$PIPX_VENVS/spotdl/lib" -name "base.py" -path "*/spotdl/providers/audio/*" 2>/dev/null | head -1)"
 if [ -n "$BASE_PY" ]; then
     info "Patching spotdl audio search to validate candidates with yt-dlp..."
@@ -230,10 +232,120 @@ import sys
 path = sys.argv[1]
 with open(path) as f:
     src = f.read()
-if "# SOUNDLOADER-PATCH: validate" in src:
-    print("Already patched.")
-    sys.exit(0)
-old = '''        # get the result with highest score
+
+changed = False
+
+HELPER = '''    def _sl_fetchable(self, url: str) -> bool:
+        """
+        SOUNDLOADER-PATCH: True when yt-dlp can actually fetch url.
+        Age-restricted, removed or geo-blocked videos raise during the
+        metadata fetch; returning them would fail the whole download later.
+        """
+        try:
+            self.get_download_metadata(url, download=False)
+            return True
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("Candidate %s unfetchable; skipping", url)
+            return False
+
+'''
+ANCHOR = "    def search(self, song: Song, only_verified: bool = False) -> Optional[str]:"
+if "_sl_fetchable" not in src and ANCHOR in src:
+    src = src.replace(ANCHOR, HELPER + ANCHOR)
+    changed = True
+
+PAIRS = [
+    # 1) single verified ISRC result
+    ('''                logger.debug(
+                    "[%s] Returning only ISRC result %s",
+                    song.song_id,
+                    isrc_results[0].url,
+                )
+
+                return isrc_results[0].url''',
+     '''                logger.debug(
+                    "[%s] Returning only ISRC result %s",
+                    song.song_id,
+                    isrc_results[0].url,
+                )
+
+                if self._sl_fetchable(isrc_results[0].url):
+                    return isrc_results[0].url'''),
+    # 2) best ISRC result above 80
+    ('''                    if best_isrc[1] > 80.0:
+                        logger.debug(
+                            "[%s] Best ISRC result is %s with score %s",
+                            song.song_id,
+                            best_isrc[0].url,
+                            best_isrc[1],
+                        )
+
+                        return best_isrc[0].url''',
+     '''                    if best_isrc[1] > 80.0 and self._sl_fetchable(
+                        best_isrc[0].url
+                    ):
+                        logger.debug(
+                            "[%s] Best ISRC result is %s with score %s",
+                            song.song_id,
+                            best_isrc[0].url,
+                            best_isrc[1],
+                        )
+
+                        return best_isrc[0].url'''),
+    # 3) ISRC url found again in the text search results
+    ('''            if isrc_result:
+                logger.debug(
+                    "[%s] Best ISRC result is %s", song.song_id, isrc_result.url
+                )
+
+                return isrc_result.url''',
+     '''            if isrc_result and self._sl_fetchable(isrc_result.url):
+                logger.debug(
+                    "[%s] Best ISRC result is %s", song.song_id, isrc_result.url
+                )
+
+                return isrc_result.url'''),
+    # 4) verified best result with score >= 80
+    ('''                if best_score >= 80 and best_result.verified:
+                    logger.debug(
+                        "[%s] Returning verified best result %s with score %s",
+                        song.song_id,
+                        best_result.url,
+                        best_score,
+                    )
+
+                    return best_result.url''',
+     '''                if (
+                    best_score >= 80
+                    and best_result.verified
+                    and self._sl_fetchable(best_result.url)
+                ):
+                    logger.debug(
+                        "[%s] Returning verified best result %s with score %s",
+                        song.song_id,
+                        best_result.url,
+                        best_score,
+                    )
+
+                    return best_result.url'''),
+    # 5) view-count tie-breaker: get_views() calls get_download_metadata()
+    #    without any guard, so ONE age-restricted candidate among the tied
+    #    results aborts the whole search with AudioProviderError before any
+    #    of the return-path guards run.
+    ('''        data = self.get_download_metadata(url)
+
+        return data["view_count"]''',
+     '''        # SOUNDLOADER-PATCH: never let the view-count tie-breaker abort
+        # the whole search - an age-restricted/removed candidate must count
+        # as 0 views, not raise through search().
+        try:
+            data = self.get_download_metadata(url)
+            return data.get("view_count") or 0
+        except Exception:  # pylint: disable=broad-except
+            logger.debug("get_views failed for %s; treating as 0", url)
+            return 0'''),
+    # 6) final best-result block: walk the top-5 by score
+    ('''        # get the result with highest score
         best_result, best_score = self.get_best_result(results)
         logger.debug(
             "[%s] Returning best result %s with score %s",
@@ -242,11 +354,14 @@ old = '''        # get the result with highest score
             best_score,
         )
 
-        return best_result.url'''
-new = '''        # SOUNDLOADER-PATCH: validate top candidates with yt-dlp before
+        return best_result.url''',
+     '''        # SOUNDLOADER-PATCH: validate top candidates with yt-dlp before
         # returning. Walk the top-5 by score, fetch lightweight metadata, and
-        # return the first one yt-dlp can actually reach. Falls back to the
-        # upstream best result if every candidate is unfetchable.
+        # return the first one yt-dlp can actually reach. When every candidate
+        # is unfetchable (e.g. all uploads of an explicit track are
+        # age-restricted), return None so the next audio provider
+        # (youtube -> soundcloud -> bandcamp) gets a chance, instead of
+        # handing back a URL that is guaranteed to fail the download.
         sorted_candidates = sorted(
             results.items(), key=lambda x: x[1], reverse=True
         )
@@ -265,18 +380,31 @@ new = '''        # SOUNDLOADER-PATCH: validate top candidates with yt-dlp before
             )
             return candidate.url
 
-        best_result, best_score = self.get_best_result(results)
         logger.debug(
-            "[%s] All candidates unfetchable; returning unvalidated best %s",
-            song.song_id, best_result.url,
+            "[%s] All candidates unfetchable; deferring to next provider",
+            song.song_id,
         )
-        return best_result.url'''
-if old in src:
+        return None'''),
+]
+
+missing = 0
+for old, new in PAIRS:
+    if new in src:
+        continue
+    if old in src:
+        src = src.replace(old, new)
+        changed = True
+    else:
+        missing += 1
+
+if changed:
     with open(path, 'w') as f:
-        f.write(src.replace(old, new))
-    print("Patch applied.")
+        f.write(src)
+    print(f"Patch applied ({missing} pattern(s) not found)." if missing
+          else "Patch applied.")
 else:
-    print("Pattern not found.")
+    print("Already patched." if missing == 0
+          else f"Nothing applied; {missing} pattern(s) not found.")
 PYEOF
     success "spotdl search validation patch done"
 fi
@@ -316,13 +444,16 @@ PYEOF
     success "spotdl gather_known_songs patch done"
 fi
 
-# ── 7c. Strip dead audio providers from spotdl config ─────────────────────────
-# piped.video stopped serving JSON in 2025 (it now returns the SPA HTML),
-# so spotdl trips on JSONDecodeError for every track when it falls back to
-# piped. Drop it from the user's audio_providers if present.
+# ── 7c. Curate spotdl audio providers in the config ───────────────────────────
+# - Drop piped: piped.video stopped serving JSON in 2025 (it now returns the
+#   SPA HTML), so spotdl trips on JSONDecodeError for every track.
+# - Append soundcloud and bandcamp as last-resort fallbacks: tracks missing
+#   from YouTube (or only available there age-restricted) are often on
+#   SoundCloud/Bandcamp, and providers are only consulted in order when the
+#   previous ones return nothing usable.
 SPOTDL_CONFIG="$HOME/.spotdl/config.json"
 if [ -f "$SPOTDL_CONFIG" ]; then
-    info "Cleaning spotdl audio_providers (dropping piped if present)..."
+    info "Curating spotdl audio_providers..."
     python3 - "$SPOTDL_CONFIG" <<'PYEOF'
 import json, sys
 p = sys.argv[1]
@@ -331,14 +462,22 @@ try:
 except Exception:
     sys.exit(0)
 providers = cfg.get("audio_providers", [])
+changed = False
 if "piped" in providers:
-    cfg["audio_providers"] = [a for a in providers if a != "piped"]
+    providers = [a for a in providers if a != "piped"]
+    changed = True
+for extra in ("soundcloud", "bandcamp"):
+    if extra not in providers:
+        providers.append(extra)
+        changed = True
+if changed:
+    cfg["audio_providers"] = providers
     json.dump(cfg, open(p, "w"), indent=2)
-    print("Removed 'piped' from audio_providers.")
+    print("audio_providers:", ", ".join(providers))
 else:
     print("Already clean.")
 PYEOF
-    success "spotdl config cleaned"
+    success "spotdl config curated"
 fi
 
 # ── 8. Compile AppleScript ────────────────────────────────────────────────────
