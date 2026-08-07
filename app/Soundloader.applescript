@@ -401,13 +401,28 @@ on handleSpotify(playlistURL)
 		end if
 	end if
 
+	-- Download through the retry driver: it runs spotdl, verifies on disk
+	-- which tracks are actually present (same file-name logic spotdl uses),
+	-- and re-runs spotdl from the local .spotdl data (no Spotify re-fetch)
+	-- until everything is there or the attempt budget is spent.
+	-- Exit 0 = all tracks verified on disk → success notification;
+	-- anything else → failure notification, missing tracks listed in Terminal.
+	set downloadScript to repoPath & "/scripts/spotify_download.py"
+	set dlCmd to quoted form of spotdlPython & " " & quoted form of downloadScript & ¬
+		" --spotdl " & quoted form of spotdlPath & ¬
+		" --target " & dlTarget & ¬
+		" --cache-dir " & quoted form of cacheDir & ¬
+		" --output " & quoted form of outputTemplate & ¬
+		" --format mp3 --attempts 3" & ¬
+		" -- --config --user-auth --bitrate 320k --threads 4 --scan-for-songs"
+
 	set cmd to "source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; " & ¬
 		syncCmd & ¬
-		spotdlPath & " --config --user-auth download " & dlTarget & ¬
-		" --bitrate 320k --format mp3 --threads 4 --scan-for-songs" & ¬
-		" --output " & quoted form of outputTemplate & ¬
-		"; osascript -e 'display notification \"Spotify download complete\" with title \"Soundloader\" sound name \"Glass\"'" & ¬
-		"; echo ''; echo '✅ Download complete. You can close this window.'"
+		"if " & dlCmd & ¬
+		"; then osascript -e 'display notification \"Spotify download complete\" with title \"Soundloader\" sound name \"Glass\"'" & ¬
+		"; echo ''; echo '✅ Download complete. You can close this window.'" & ¬
+		"; else osascript -e 'display notification \"Download finished — some tracks are missing\" with title \"Soundloader\" sound name \"Basso\"'" & ¬
+		"; echo ''; echo '⚠️  Some tracks could not be downloaded — see the list above.'; fi"
 
 	tell application "Terminal"
 		activate
@@ -428,8 +443,12 @@ on handleSoundCloud(scURL)
 		set outputTemplate to musicDir & "Soundloader/SoundCloud/%(uploader)s - %(title)s.%(ext)s"
 	end if
 
+	-- ytdlp_retry.sh re-runs yt-dlp (up to 3 attempts) while items fail;
+	-- a temp --download-archive makes retries skip what already succeeded.
+	-- Success notification only when every item is downloaded (exit 0).
+	set retryHelper to repoPath & "/scripts/ytdlp_retry.sh"
 	set cmd to "source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; " & ¬
-		ytdlpPath & ¬
+		"if bash " & quoted form of retryHelper & " 3 " & ytdlpPath & ¬
 		" --ignore-errors" & ¬
 		" --no-overwrites" & ¬
 		" --extract-audio --audio-format mp3 --audio-quality 0" & ¬
@@ -438,8 +457,10 @@ on handleSoundCloud(scURL)
 		" --retries 5" & ¬
 		" -o " & quoted form of outputTemplate & ¬
 		" " & quoted form of scURL & ¬
-		"; osascript -e 'display notification \"SoundCloud download complete\" with title \"Soundloader\" sound name \"Glass\"'" & ¬
-		"; echo ''; echo '✅ Download complete. You can close this window.'"
+		"; then osascript -e 'display notification \"SoundCloud download complete\" with title \"Soundloader\" sound name \"Glass\"'" & ¬
+		"; echo ''; echo '✅ Download complete. You can close this window.'" & ¬
+		"; else osascript -e 'display notification \"Download finished — some items are missing\" with title \"Soundloader\" sound name \"Basso\"'" & ¬
+		"; echo ''; echo '⚠️  Some items could not be downloaded — see the output above.'; fi"
 
 	tell application "Terminal"
 		activate
@@ -471,8 +492,13 @@ on handleYouTube(videoURL)
 	-- --postprocessor-args       : (a) set audio bitrate 320k
 	--                              (b) strip YouTube-specific junk tags that pollute
 	--                                  music players: description, synopsis, purl, comment
+	-- ytdlp_retry.sh re-runs yt-dlp (up to 3 attempts) while items fail;
+	-- a temp --download-archive makes retries skip what already succeeded.
+	-- Success notification only when every item is downloaded (exit 0).
+	set retryHelper to repoPath & "/scripts/ytdlp_retry.sh"
 	set cmd to "source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; " & ¬
-		ytdlpPath & " --extract-audio --audio-format mp3" & ¬
+		"if bash " & quoted form of retryHelper & " 3 " & ytdlpPath & ¬
+		" --extract-audio --audio-format mp3" & ¬
 		" --embed-thumbnail" & ¬
 		" --parse-metadata \"title:(?P<artist>.+?) [–\\-] (?P<track>.+)\"" & ¬
 		" --parse-metadata \"upload_date:(?P<date>\\d{4})\"" & ¬
@@ -481,8 +507,10 @@ on handleYouTube(videoURL)
 		" --cookies-from-browser safari" & ¬
 		" -o " & quoted form of outputTemplate & ¬
 		" " & quoted form of videoURL & ¬
-		"; osascript -e 'display notification \"YouTube download complete\" with title \"Soundloader\" sound name \"Glass\"'" & ¬
-		"; echo ''; echo '✅ Download complete. You can close this window.'"
+		"; then osascript -e 'display notification \"YouTube download complete\" with title \"Soundloader\" sound name \"Glass\"'" & ¬
+		"; echo ''; echo '✅ Download complete. You can close this window.'" & ¬
+		"; else osascript -e 'display notification \"Download finished — some items are missing\" with title \"Soundloader\" sound name \"Basso\"'" & ¬
+		"; echo ''; echo '⚠️  Some items could not be downloaded — see the output above.'; fi"
 
 	tell application "Terminal"
 		activate
