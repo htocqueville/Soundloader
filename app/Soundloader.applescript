@@ -92,12 +92,15 @@ end run
 -- git pull + setup.sh in a Terminal window, then quit so the user reopens
 -- the freshly compiled app. The Terminal echoes a clear completion message.
 on performUpdate()
+	-- Note: the success/failure echoes must be grouped — a bare
+	-- `… && echo OK || echo '' && echo FAIL` parses left-to-right as
+	-- `(… || echo '') && echo FAIL`, printing FAIL even on success.
 	set updateCmd to ¬
-		"cd " & quoted form of repoPath & ¬
+		"if cd " & quoted form of repoPath & ¬
 		" && echo '⬇️  Pulling latest changes...' && git pull --ff-only" & ¬
 		" && echo '' && echo '🔧 Rebuilding app...' && bash " & quoted form of (repoPath & "/setup.sh") & ¬
-		" && echo '' && echo '✅ Update complete! Please reopen Soundloader from /Applications or Spotlight.'" & ¬
-		" || echo '' && echo '❌ Update failed. Check the output above and try again.'"
+		"; then echo ''; echo '✅ Update complete! Please reopen Soundloader from /Applications or Spotlight.'" & ¬
+		"; else echo ''; echo '❌ Update failed. Check the output above and try again.'; fi"
 	tell application "Terminal"
 		activate
 		do script updateCmd
