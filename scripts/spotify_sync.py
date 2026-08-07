@@ -71,6 +71,7 @@ def _spotipy_client():
     """
     from spotipy import Spotify
     from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials, CacheFileHandler
+    from spotipy.cache_handler import MemoryCacheHandler
 
     cfg = _spotdl_config()
     cid = cfg.get("client_id", "")
@@ -81,23 +82,40 @@ def _spotipy_client():
     cache_path = str(Path.home() / ".spotdl" / ".spotipy")
     handler = CacheFileHandler(cache_path)
 
-    # Try user-auth with cached token (no browser).
+    # Try the cached user token, refreshing it if expired — strictly
+    # non-interactive. Two traps here:
+    # - Don't request a scope: validate_token() rejects the cached token
+    #   unless the requested scope is a subset of the token's, and the scopes
+    #   spotdl requests have changed across versions (4.5.2 drops
+    #   playlist-read-collaborative). Whatever spotdl's token grants is
+    #   exactly what the download will get anyway.
+    # - Never hand an auth_manager to Spotify(): when the token can't be
+    #   refreshed, spotipy falls back to an input() prompt ("Enter the URL
+    #   you were redirected to"), which hangs the whole download chain when
+    #   launched from the app. validate_token() refreshes or fails silently.
     cached = handler.get_cached_token()
     if cached:
         auth = SpotifyOAuth(
             client_id=cid,
             client_secret=cs,
             redirect_uri="http://127.0.0.1:9900/",
-            scope="playlist-read-private,playlist-read-collaborative",
             cache_handler=handler,
             open_browser=False,
         )
-        return Spotify(auth_manager=auth)
+        try:
+            token_info = auth.validate_token(cached)
+        except Exception:
+            token_info = None
+        if token_info and token_info.get("access_token"):
+            return Spotify(auth=token_info["access_token"])
 
-    # Fall back to client credentials (public playlists only).
+    # Fall back to client credentials (public playlists only). Memory cache
+    # handler: the default one writes a ".cache" file in the cwd, which is
+    # unwritable when launched from the app ("Couldn't read cache at: .cache").
     return Spotify(auth_manager=SpotifyClientCredentials(
         client_id=cid,
         client_secret=cs,
+        cache_handler=MemoryCacheHandler(),
     ))
 
 
@@ -252,6 +270,17 @@ def main() -> int:
         songs_data = run_spotdl_save(args.spotdl, args.url)
         if songs_data and args.cache_dir and playlist_id:
             save_to_cache(songs_data, args.cache_dir, playlist_id)
+        elif not songs_data and args.cache_dir and playlist_id:
+            # Spotify refuses the fetch for other accounts' playlists
+            # (dev-mode API policy since 2026). Reconcile with the last saved
+            # playlist data instead — spotify_download.py refreshes it on
+            # every run via --save-file, so it is at most one run stale, the
+            # same vintage as the files on disk.
+            fallback = Path(args.cache_dir) / f"{playlist_id}.spotdl"
+            if fallback.is_file():
+                print("[sync] Spotify fetch unavailable — reconciling with "
+                      "the last saved playlist data.")
+                songs_data = load_from_cache(str(fallback))
 
     if not songs_data:
         return 0  # Non-fatal: let the download proceed without pre-sync.
