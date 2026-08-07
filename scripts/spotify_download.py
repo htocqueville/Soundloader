@@ -13,6 +13,11 @@ that failed (YouTube throttling, flaky search results). This automates exactly
 that, with an on-disk check instead of trusting spotdl's exit code (spotdl
 exits 0 even when individual songs fail).
 
+Tracks that already exist in another playlist's folder are skipped by spotdl
+("duplicate", via --scan-for-songs); those are copied from the library into
+this playlist's folder instead of re-downloaded, so every playlist folder
+ends up complete.
+
 For URL targets, `--save-file` is added to the first attempt so the fetched
 song data lands in the cache dir — this is what makes verification possible,
 and it doubles as the playlist cache the app's precheck offers to reuse.
@@ -31,6 +36,7 @@ Designed to run on the Python interpreter inside spotdl's pipx venv so that
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -42,32 +48,36 @@ def _track_id(url: str) -> str:
     return m.group(1) if m else ""
 
 
-def scan_library_track_ids(base: Path) -> set:
+def scan_library(base: Path) -> dict:
     """
-    Collect the Spotify track ids of every MP3 under base, read from the WOAS
-    (source URL) ID3 frame that spotdl writes. Mirrors what spotdl's
-    --scan-for-songs uses to skip cross-playlist duplicates.
+    Map the Spotify track id of every MP3 under base to its path, read from
+    the WOAS (source URL) ID3 frame that spotdl writes. Mirrors what spotdl's
+    --scan-for-songs uses to detect cross-playlist duplicates.
     """
     from mutagen.id3 import ID3
 
-    ids = set()
+    index: dict = {}
     for mp3 in base.rglob("*.mp3"):
         try:
             frame = ID3(mp3).get("WOAS")
         except Exception:
             continue
         tid = _track_id(getattr(frame, "url", "") if frame else "")
-        if tid:
-            ids.add(tid)
-    return ids
+        if tid and tid not in index:
+            index[tid] = mp3
+    return index
 
 
-def compute_missing(data_path: Path, template: str, ext: str):
+def verify(data_path: Path, template: str, ext: str):
     """
-    Return the display names of tracks in data_path that spotdl would still
-    try to download: no file at the expected path AND no copy anywhere in the
-    library (spotdl skips those as "(duplicate)" with --scan-for-songs).
-    Returns None when there is no usable song data to verify against.
+    Compare data_path's songs against the disk. Returns (missing, dup_copies):
+      missing    — display names with no file at the expected path and no
+                   copy anywhere in the library
+      dup_copies — (src, dst, name) for tracks that exist elsewhere in the
+                   library (spotdl skips downloading those as "(duplicate)"
+                   with --scan-for-songs) and just need copying into this
+                   playlist's folder
+    Returns (None, []) when there is no usable song data to verify against.
     """
     from spotdl.types.song import Song
     from spotdl.utils.formatter import create_file_name
@@ -76,10 +86,10 @@ def compute_missing(data_path: Path, template: str, ext: str):
         with open(data_path) as f:
             data = json.load(f)
     except Exception:
-        return None
+        return None, []
     songs = data if isinstance(data, list) else data.get("songs", [])
     if not songs:
-        return None
+        return None, []
 
     candidates = []
     for d in songs:
@@ -89,20 +99,27 @@ def compute_missing(data_path: Path, template: str, ext: str):
         except Exception:
             continue  # unverifiable entry — never retry-loop on it
         if not path.exists():
-            candidates.append(song)
+            candidates.append((song, path))
     if not candidates:
-        return []
+        return [], []
 
     # Library base = static prefix of the output template
     # (e.g. "…/Music/Soundloader/{list-name}/…" → "…/Music/Soundloader").
-    library_ids = set()
+    library: dict = {}
     prefix = template.split("{", 1)[0]
-    base = Path(prefix).parent if not prefix.endswith("/") else Path(prefix)
+    base = Path(prefix) if prefix.endswith("/") else Path(prefix).parent
     if str(base) not in ("", ".") and base.is_dir():
-        library_ids = scan_library_track_ids(base)
+        library = scan_library(base)
 
-    return [f"{song.artist} - {song.name}" for song in candidates
-            if not (_track_id(song.url) and _track_id(song.url) in library_ids)]
+    missing, dup_copies = [], []
+    for song, path in candidates:
+        name = f"{song.artist} - {song.name}"
+        src = library.get(_track_id(song.url))
+        if src:
+            dup_copies.append((src, path, name))
+        else:
+            missing.append(name)
+    return missing, dup_copies
 
 
 def main() -> int:
@@ -148,9 +165,23 @@ def main() -> int:
             # Nothing to verify against — single run, like before.
             return proc.returncode
 
-        missing = compute_missing(data_path, args.output, args.format)
+        missing, dup_copies = verify(data_path, args.output, args.format)
         if missing is None:
             return proc.returncode
+
+        # Tracks already in the library under another playlist: spotdl skips
+        # downloading them ("duplicate"), so copy them into this folder to
+        # keep every playlist folder complete.
+        for src, dst, name in dup_copies:
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                print(f"[dl] ⧉ Copied library duplicate into playlist: {name}")
+            except OSError as e:
+                print(f"[dl] Failed to copy duplicate {name}: {e}",
+                      file=sys.stderr)
+                missing.append(name)
+
         if not missing:
             print("[dl] ✅ All tracks verified on disk.")
             return 0
