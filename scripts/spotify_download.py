@@ -13,6 +13,11 @@ that failed (YouTube throttling, flaky search results). This automates exactly
 that, with an on-disk check instead of trusting spotdl's exit code (spotdl
 exits 0 even when individual songs fail).
 
+Before the first retry, scripts/ytdlp_refresh.py is run with --force: when
+*every* track fails, the cause is almost always an outdated yt-dlp module in
+spotdl's venv (YouTube changed something), and no amount of retrying helps
+until it is updated. The refresh is cheap when yt-dlp is already current.
+
 Tracks that already exist in another playlist's folder are skipped by spotdl
 ("duplicate", via --scan-for-songs); those are copied from the library into
 this playlist's folder instead of re-downloaded, so every playlist folder
@@ -192,6 +197,12 @@ def main() -> int:
                   f"retry {attempt + 1}/{args.attempts} in {delay}s:")
             for name in missing:
                 print(f"        {name}")
+            if attempt == 1:
+                # Outdated yt-dlp = every track fails; make sure the retry
+                # runs on a current one. Never raises, exits 0 regardless.
+                refresh = Path(__file__).resolve().parent / "ytdlp_refresh.py"
+                if refresh.is_file():
+                    subprocess.run([sys.executable, str(refresh), "--force"])
             time.sleep(delay)
             # Retry from the local data file — no Spotify re-fetch.
             if data_path.is_file():

@@ -12,6 +12,8 @@ success() { echo -e "${GREEN}✓ $1${RESET}"; }
 warn()    { echo -e "${YELLOW}⚠ $1${RESET}"; }
 error()   { echo -e "${RED}✗ $1${RESET}"; exit 1; }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 echo -e "${BOLD}"
 echo "╔══════════════════════════════════╗"
 echo "║   Soundloader — Setup            ║"
@@ -107,6 +109,8 @@ else
 fi
 
 # ── 6. yt-dlp (always via brew — pip/system installs use outdated Python) ─────
+# This binary serves the SoundCloud / YouTube handlers. spotdl does NOT use
+# it: it downloads through the yt_dlp module of its own venv — see 7a.
 info "Installing/updating yt-dlp via Homebrew..."
 brew install yt-dlp 2>/dev/null || brew upgrade yt-dlp 2>/dev/null || true
 
@@ -125,6 +129,18 @@ if [ ! -f "$SPOTDL_PATH" ]; then
     fi
 fi
 success "spotdl: $SPOTDL_PATH"
+
+# ── 7a. yt-dlp inside spotdl's venv ───────────────────────────────────────────
+# spotdl downloads with the yt_dlp *module* of its pipx venv, never with the
+# Homebrew binary above. When YouTube changes something, an outdated module
+# fails every single track ("YT-DLP download error" — Sept 2026: HTTP 403 on
+# the media while extraction still worked), and re-running setup.sh used to
+# leave it stale since only brew got upgraded. The app now refreshes both
+# copies daily via scripts/ytdlp_refresh.py; run it here too (--force) so a
+# fresh install or an app update starts current.
+info "Updating yt-dlp inside spotdl's venv..."
+"$(dirname "$SPOTDL_PATH")/python3" "$SCRIPT_DIR/scripts/ytdlp_refresh.py" --force \
+    || warn "yt-dlp refresh failed — the app will retry before the next download"
 
 # yt-dlp path — prefer brew's version (ships with a modern Python runtime,
 # avoids the LibreSSL/SSL issues of system Python 3.9 pip installs)
@@ -483,7 +499,6 @@ fi
 # ── 8. Compile AppleScript ────────────────────────────────────────────────────
 info "Compiling Soundloader.app..."
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPLESCRIPT_SOURCE="$SCRIPT_DIR/app/Soundloader.applescript"
 APP_DEST="/Applications/Soundloader.app"
 TMP_SCRIPT="/tmp/Soundloader_build.applescript"

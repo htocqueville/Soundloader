@@ -78,6 +78,8 @@ Already-downloaded tracks are skipped automatically.
 
 The app checks for updates automatically at launch and will notify you when one is available.
 
+yt-dlp (the downloader behind every source) is refreshed automatically before each download, at most once a day — YouTube changes its rules every few weeks, and an outdated yt-dlp makes every track fail. `bash setup.sh` refreshes it too.
+
 ---
 
 ## Troubleshooting
@@ -89,6 +91,7 @@ The app checks for updates automatically at launch and will notify you when one 
 | Spotify: "Invalid redirect URI" | Add both `http://127.0.0.1:9900/` and `http://127.0.0.1:9900` as Redirect URIs |
 | YouTube: "Operation not permitted" on cookies | Grant Terminal Full Disk Access (see YouTube Setup above) |
 | Download stops mid-playlist | Re-run — already-downloaded tracks are skipped |
+| Every track fails with `YT-DLP download error` / `HTTP Error 403` | yt-dlp is outdated. The app updates it before the next download; if it keeps failing, re-run `bash setup.sh` |
 
 ---
 

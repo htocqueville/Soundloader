@@ -231,6 +231,21 @@ on saveCredentials(homeDir, configPath, clientId, clientSecret)
 end saveCredentials
 
 
+-- ── yt-dlp freshness ──────────────────────────────────────────────────────────
+-- Shell snippet (trailing "; ") run before every download: scripts/
+-- ytdlp_refresh.py, on spotdl's venv interpreter, keeps both the yt_dlp
+-- module spotdl downloads with and the Homebrew yt-dlp binary (SoundCloud /
+-- YouTube) current. At most one check a day, exit 0 whatever happens, so it
+-- never blocks. An outdated yt-dlp is the one failure that breaks every
+-- track at once (YouTube-side changes) — updating is the only fix.
+
+on ytdlpRefreshCmd()
+	set AppleScript's text item delimiters to "/"
+	set venvPython to ((text items 1 thru -2 of spotdlPath) as text) & "/python3"
+	set AppleScript's text item delimiters to ""
+	return quoted form of venvPython & " " & quoted form of (repoPath & "/scripts/ytdlp_refresh.py") & "; "
+end ytdlpRefreshCmd
+
 -- ── Spotify ───────────────────────────────────────────────────────────────────
 
 on handleSpotify(playlistURL)
@@ -417,6 +432,7 @@ on handleSpotify(playlistURL)
 		" -- --config --user-auth --bitrate 320k --threads 4 --scan-for-songs"
 
 	set cmd to "source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; " & ¬
+		my ytdlpRefreshCmd() & ¬
 		syncCmd & ¬
 		"if " & dlCmd & ¬
 		"; then osascript -e 'display notification \"Spotify download complete\" with title \"Soundloader\" sound name \"Glass\"'" & ¬
@@ -470,6 +486,7 @@ on handleSoundCloud(scURL)
 	-- Success notification only when every item is downloaded (exit 0).
 	set retryHelper to repoPath & "/scripts/ytdlp_retry.sh"
 	set cmd to "source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; " & ¬
+		my ytdlpRefreshCmd() & ¬
 		"if bash " & quoted form of retryHelper & " 3 " & ytdlpPath & ¬
 		" --ignore-errors" & ¬
 		" --no-overwrites" & ¬
@@ -519,6 +536,7 @@ on handleYouTube(videoURL)
 	-- Success notification only when every item is downloaded (exit 0).
 	set retryHelper to repoPath & "/scripts/ytdlp_retry.sh"
 	set cmd to "source ~/.zshrc 2>/dev/null; source ~/.zprofile 2>/dev/null; " & ¬
+		my ytdlpRefreshCmd() & ¬
 		"if bash " & quoted form of retryHelper & " 3 " & ytdlpPath & ¬
 		" --extract-audio --audio-format mp3" & ¬
 		" --embed-thumbnail" & ¬
